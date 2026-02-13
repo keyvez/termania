@@ -1,0 +1,41 @@
+[package]
+name = "termania"
+version = "0.1.0"
+edition = "2021"
+description = "A multi-window grid terminal emulator with large font support and text tap API"
+license = "MIT"
+
+[[bin]]
+name = "termania"
+path = "src/main.rs"
+
+[dependencies]
+# Window and event loop
+winit = "0.30"
+
+# GPU rendering
+wgpu = "23"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+# Font handling
+cosmic-text = "0.12"
+
+# Terminal emulation
+vte = "0.13"
+
+# PTY management (direct libc for fork/exec/pty)
+libc = "0.2"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,73 @@
+# Termania Configuration
+# Place this at: ~/.config/termania/config.toml
+
+[font]
+family = "Menlo"          # Font family (e.g., "JetBrains Mono", "SF Mono", "Fira Code")
+size = 18.0               # Font size in points - go big for grid overview!
+line_height = 1.2         # Line height multiplier
+letter_spacing = 0.0      # Extra letter spacing in pixels
+# bold_family = "Menlo"   # Optional: separate bold font
+
+[grid]
+rows = 2                  # Number of rows in the pane grid
+cols = 2                  # Number of columns in the pane grid
+gap = 4                   # Gap between panes (pixels)
+inner_padding = 8         # Padding inside each pane (pixels)
+outer_padding = 8         # Padding around the entire grid (pixels)
+title_bar_height = 28     # Height of each pane's title bar (pixels)
+
+[window]
+width = 1600              # Initial window width
+height = 1000             # Initial window height
+title = "Termania"        # Window title
+
+[colors]
+background = "#1a1b26"    # Terminal background
+foreground = "#c0caf5"    # Default text color
+cursor = "#c0caf5"        # Cursor color
+selection = "#33467c"     # Selection highlight
+border = "#3b4261"        # Unfocused pane border
+border_focused = "#7aa2f7" # Focused pane border
+title_bg = "#24283b"      # Title bar background
+title_fg = "#a9b1d6"      # Title bar text
+
+# ANSI color palette (16 colors: 8 normal + 8 bright)
+ansi = [
+    "#15161e",  # black
+    "#f7768e",  # red
+    "#9ece6a",  # green
+    "#e0af68",  # yellow
+    "#7aa2f7",  # blue
+    "#bb9af7",  # magenta
+    "#7dcfff",  # cyan
+    "#a9b1d6",  # white
+    "#414868",  # bright black
+    "#f7768e",  # bright red
+    "#9ece6a",  # bright green
+    "#e0af68",  # bright yellow
+    "#7aa2f7",  # bright blue
+    "#bb9af7",  # bright magenta
+    "#7dcfff",  # bright cyan
+    "#c0caf5",  # bright white
+]
+
+[text_tap]
+enabled = true
+socket_path = "/tmp/termania.sock"
+
+# Per-pane configuration (optional)
+# Each [[panes]] entry configures one pane in grid order (left-to-right, top-to-bottom)
+
+[[panes]]
+title = "Agent 1"
+# command = "/bin/zsh"
+# cwd = "/path/to/project"
+
+[[panes]]
+title = "Agent 2"
+
+[[panes]]
+title = "Build"
+
+[[panes]]
+title = "Logs"
