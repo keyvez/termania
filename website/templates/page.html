@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+    <aside class="docs-sidebar">
+        <nav class="docs-nav">
+            <h4>Documentation</h4>
+            <a href="{{ get_url(path='docs/installation') }}" {% if page.path == "docs/installation.md" %}class="active"{% endif %}>Installation</a>
+            <a href="{{ get_url(path='docs/configuration') }}" {% if page.path == "docs/configuration.md" %}class="active"{% endif %}>Configuration</a>
+            <a href="{{ get_url(path='docs/keyboard-shortcuts') }}" {% if page.path == "docs/keyboard-shortcuts.md" %}class="active"{% endif %}>Keyboard Shortcuts</a>
+            <a href="{{ get_url(path='docs/plugins') }}" {% if page.path == "docs/plugins.md" %}class="active"{% endif %}>Plugins</a>
+            <a href="{{ get_url(path='docs/text-tap-api') }}" {% if page.path == "docs/text-tap-api.md" %}class="active"{% endif %}>Text Tap API</a>
+            <h4>Resources</h4>
+            <a href="{{ get_url(path='examples/') }}">Examples</a>
+            <a href="https://github.com/anthropics/termania" rel="noopener noreferrer" target="_blank">GitHub</a>
+        </nav>
+    </aside>
+    <article class="docs-content">
+        <h1>{{ page.title }}</h1>
+        {{ page.content | safe }}
+    </article>
+</div>
+{% endblock %}

@@ -313,6 +313,11 @@ impl Terminal {
         result
     }
 
+    /// Get the child process PID from the PTY
+    pub fn child_pid(&self) -> Option<u32> {
+        self.pty.as_ref().map(|p| p.child_pid())
+    }
+
     pub fn has_error(&self) -> bool {
         self.has_error
     }
@@ -1090,5 +1095,276 @@ impl TerminalManager {
         if index < self.terminals.len() && self.terminals.len() > 1 {
             self.terminals.remove(index);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_terminal(cols: usize, rows: usize) -> Terminal {
+        Terminal::new(cols, rows, "Test")
+    }
+
+    #[test]
+    fn test_terminal_creation() {
+        let t = make_terminal(80, 24);
+        assert_eq!(t.cursor_position(), (0, 0));
+        assert_eq!(t.title(), "Test");
+        // Without a PTY, is_exited() returns true (no child process)
+        assert!(t.is_exited());
+    }
+
+    #[test]
+    fn test_put_char() {
+        let mut t = make_terminal(80, 24);
+        t.put_char('A');
+        assert_eq!(t.cursor_position(), (0, 1));
+        let text = t.visible_text();
+        assert!(text.starts_with('A'));
+    }
+
+    #[test]
+    fn test_cursor_movement_csi() {
+        let mut t = make_terminal(80, 24);
+        // Move cursor to row 5, col 10 using CUP (CSI H)
+        t.process_output(b"\x1b[5;10H");
+        assert_eq!(t.cursor_position(), (4, 9)); // 0-indexed
+    }
+
+    #[test]
+    fn test_cursor_up() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[10;1H"); // move to row 10
+        t.process_output(b"\x1b[3A"); // up 3
+        assert_eq!(t.cursor_position().0, 6); // 9 - 3 = 6
+    }
+
+    #[test]
+    fn test_cursor_down() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[3B"); // down 3
+        assert_eq!(t.cursor_position().0, 3);
+    }
+
+    #[test]
+    fn test_cursor_forward() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[5C"); // forward 5
+        assert_eq!(t.cursor_position().1, 5);
+    }
+
+    #[test]
+    fn test_cursor_back() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[10C"); // forward 10
+        t.process_output(b"\x1b[3D"); // back 3
+        assert_eq!(t.cursor_position().1, 7);
+    }
+
+    #[test]
+    fn test_sgr_colors() {
+        let mut t = make_terminal(80, 24);
+        // Set red foreground, write char
+        t.process_output(b"\x1b[31mX\x1b[0m");
+        let lines = t.visible_lines();
+        match lines[0][0].fg {
+            CellColor::Ansi(1) => {} // red
+            other => panic!("Expected Ansi(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sgr_rgb() {
+        let mut t = make_terminal(80, 24);
+        // Set 24-bit foreground
+        t.process_output(b"\x1b[38;2;255;128;0mR");
+        let lines = t.visible_lines();
+        match lines[0][0].fg {
+            CellColor::Rgb(255, 128, 0) => {}
+            other => panic!("Expected Rgb(255,128,0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sgr_256color() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[38;5;42mC");
+        let lines = t.visible_lines();
+        match lines[0][0].fg {
+            CellColor::Indexed(42) => {}
+            other => panic!("Expected Indexed(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sgr_bold_italic_underline() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[1;3;4mB");
+        let lines = t.visible_lines();
+        assert!(lines[0][0].bold);
+        assert!(lines[0][0].italic);
+        assert!(lines[0][0].underline);
+    }
+
+    #[test]
+    fn test_erase_in_display_clear_all() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"Hello World");
+        t.process_output(b"\x1b[2J"); // clear all
+        let text = t.visible_text();
+        assert!(text.trim().is_empty());
+    }
+
+    #[test]
+    fn test_erase_in_line() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"Hello World");
+        t.process_output(b"\x1b[1;6H"); // move to col 6
+        t.process_output(b"\x1b[K"); // erase from cursor to end
+        let text = t.visible_text();
+        assert!(text.starts_with("Hello"));
+        assert!(!text.contains("World"));
+    }
+
+    #[test]
+    fn test_newline_scroll() {
+        let mut t = make_terminal(80, 5);
+        for i in 0..10 {
+            t.process_output(format!("Line {}\n", i).as_bytes());
+        }
+        // Should have some scrollback
+        assert!(!t.scrollback.is_empty());
+    }
+
+    #[test]
+    fn test_alt_screen() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"Primary content");
+        // Enter alt screen
+        t.process_output(b"\x1b[?1049h");
+        assert!(t.on_alt_screen);
+        let text = t.visible_text();
+        assert!(!text.contains("Primary"));
+        // Exit alt screen
+        t.process_output(b"\x1b[?1049l");
+        assert!(!t.on_alt_screen);
+        let text = t.visible_text();
+        assert!(text.contains("Primary"));
+    }
+
+    #[test]
+    fn test_resize() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"Hello");
+        t.resize(40, 12);
+        assert_eq!(t.cols, 40);
+        assert_eq!(t.rows, 12);
+        let text = t.visible_text();
+        assert!(text.contains("Hello"));
+    }
+
+    #[test]
+    fn test_resize_no_change() {
+        let mut t = make_terminal(80, 24);
+        t.clear_dirty();
+        t.resize(80, 24);
+        assert!(!t.is_dirty()); // Should not mark dirty
+    }
+
+    #[test]
+    fn test_scrollback() {
+        let mut t = make_terminal(80, 5);
+        for i in 0..20 {
+            t.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+        assert!(t.scrollback.len() > 0);
+        t.scroll_view_up(3);
+        assert_eq!(t.scroll_offset(), 3);
+        t.scroll_view_down(1);
+        assert_eq!(t.scroll_offset(), 2);
+        t.scroll_to_bottom();
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_visible_text() {
+        let mut t = make_terminal(10, 3);
+        t.process_output(b"abc");
+        let text = t.visible_text();
+        assert!(text.starts_with("abc"));
+    }
+
+    #[test]
+    fn test_scrolled_lines_live() {
+        let mut t = make_terminal(10, 3);
+        t.process_output(b"ABC");
+        let lines = t.scrolled_lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0][0].ch, 'A');
+    }
+
+    #[test]
+    fn test_set_title() {
+        let mut t = make_terminal(80, 24);
+        t.set_title("New Title".to_string());
+        assert_eq!(t.title(), "New Title");
+    }
+
+    #[test]
+    fn test_osc_title() {
+        let mut t = make_terminal(80, 24);
+        // OSC 0 ; title BEL
+        t.process_output(b"\x1b]0;My Terminal\x07");
+        assert_eq!(t.title(), "My Terminal");
+    }
+
+    #[test]
+    fn test_tab_stop() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\t");
+        assert_eq!(t.cursor_position().1, 8);
+    }
+
+    #[test]
+    fn test_carriage_return() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"Hello\rWorld");
+        let text = t.visible_text();
+        assert!(text.starts_with("World"));
+    }
+
+    #[test]
+    fn test_backspace() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"ABC\x08D"); // BS after C, then D
+        let text = t.visible_text();
+        assert!(text.starts_with("ABD"));
+    }
+
+    #[test]
+    fn test_save_restore_cursor() {
+        let mut t = make_terminal(80, 24);
+        t.process_output(b"\x1b[5;10H"); // move to (4,9)
+        t.process_output(b"\x1b7");       // save cursor (ESC 7)
+        t.process_output(b"\x1b[1;1H");   // move to (0,0)
+        t.process_output(b"\x1b8");       // restore cursor (ESC 8)
+        assert_eq!(t.cursor_position(), (4, 9));
+    }
+
+    #[test]
+    fn test_dirty_flag() {
+        let mut t = make_terminal(80, 24);
+        assert!(t.is_dirty()); // dirty after creation
+        t.clear_dirty();
+        assert!(!t.is_dirty());
+        t.process_output(b"X");
+        assert!(t.is_dirty());
+    }
+
+    #[test]
+    fn test_child_pid_none_without_pty() {
+        let t = make_terminal(80, 24);
+        assert!(t.child_pid().is_none());
     }
 }

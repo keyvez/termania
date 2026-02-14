@@ -1,0 +1,53 @@
+# Development Dashboard
+# A comprehensive dev workspace with terminals, git, logs, processes, and system info.
+
+title = "Dev Dashboard"
+rows = 3
+cols = 3
+
+# --- Row 1: Main dev shell + Git status (2 panes) ---
+
+[[panes]]
+type = "terminal"
+title = "Dev Shell"
+command = "zsh"
+cwd = "~/projects"
+initial_commands = ["echo 'Welcome to the dev dashboard'", "ls -la"]
+watermark = "DEV"
+
+[[panes]]
+type = "git_status"
+title = "Git Status"
+repo = "."
+
+# --- Row 2: Log viewer + Process monitor + File browser (3 panes) ---
+
+[[panes]]
+type = "log_viewer"
+title = "App Logs"
+file = "/tmp/app.log"
+
+[[panes]]
+type = "process_monitor"
+title = "Processes"
+refresh_ms = 2000
+
+[[panes]]
+type = "file_browser"
+title = "Project Files"
+path = "~/projects"
+
+# --- Row 3: System info + Build shell (2 panes) ---
+
+[[panes]]
+type = "system_info"
+title = "System Info"
+refresh_ms = 3000
+
+[[panes]]
+type = "terminal"
+title = "Build Shell"
+command = "zsh"
+cwd = "~/projects"
+initial_commands = ["echo 'Ready for builds'"]
+watermark = "BUILD"

@@ -1,0 +1,33 @@
+# Documentation Workspace
+# A writing-focused layout for reviewing and editing project documentation.
+
+title = "Documentation Workspace"
+rows = 2
+cols = 2
+
+# --- Row 1: Markdown preview + Notes ---
+
+[[panes]]
+type = "markdown_preview"
+title = "README Preview"
+file = "README.md"
+
+[[panes]]
+type = "notes"
+title = "Draft Notes"
+content = "# Documentation Notes\n\n- Review README for accuracy\n- Update API reference\n- Add usage examples\n- Check links"
+
+# --- Row 2: Terminal + File browser ---
+
+[[panes]]
+type = "terminal"
+title = "Docs Shell"
+command = "zsh"
+cwd = "~/projects"
+initial_commands = ["echo 'Documentation shell ready'", "find . -name '*.md' | head -20"]
+watermark = "DOCS"
+
+[[panes]]
+type = "file_browser"
+title = "Doc Files"
+path = "~/projects"

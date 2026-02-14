@@ -103,6 +103,7 @@ pub struct PaneContext {
     pub pane_type: String,
     pub title: String,
     pub visible_text: String,
+    pub subprocess_info: Option<String>,
 }
 
 /// Non-blocking LLM client using a background thread
@@ -393,8 +394,16 @@ fn build_system_prompt(panes: &[PaneContext]) -> String {
 
     for pane in panes {
         prompt.push_str(&format!(
-            "\n--- Pane {} [{}] (\"{}\") ---\nLast visible output:\n{}\n",
+            "\n--- Pane {} [{}] (\"{}\") ---\n",
             pane.index, pane.pane_type, pane.title,
+        ));
+        if let Some(ref info) = pane.subprocess_info {
+            if !info.is_empty() {
+                prompt.push_str(&format!("{}\n", info));
+            }
+        }
+        prompt.push_str(&format!(
+            "Last visible output:\n{}\n",
             truncate_visible_text(&pane.visible_text, 50)
         ));
     }
@@ -617,4 +626,208 @@ fn extract_json(text: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_direct() {
+        let input = r#"{"explanation": "test", "actions": []}"#;
+        let result = extract_json(input);
+        assert!(result.is_some());
+        assert!(result.unwrap().starts_with('{'));
+    }
+
+    #[test]
+    fn test_extract_json_markdown_fenced() {
+        let input = "Here is the response:\n```json\n{\"explanation\": \"test\", \"actions\": []}\n```\n";
+        let result = extract_json(input);
+        assert!(result.is_some());
+        let json = result.unwrap();
+        assert!(json.contains("explanation"));
+    }
+
+    #[test]
+    fn test_extract_json_generic_fence() {
+        let input = "```\n{\"explanation\": \"hi\", \"actions\": []}\n```";
+        let result = extract_json(input);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_json_embedded() {
+        let input = "Sure, here you go: {\"explanation\": \"ok\", \"actions\": []} done.";
+        let result = extract_json(input);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_json_no_json() {
+        let input = "This is plain text with no JSON";
+        let result = extract_json(input);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_llm_response_valid() {
+        let input = r#"{"explanation": "Running ls", "actions": [{"type": "send_command", "pane": 0, "command": "ls"}]}"#;
+        let resp = parse_llm_response(input);
+        assert_eq!(resp.explanation, "Running ls");
+        assert_eq!(resp.actions.len(), 1);
+        match &resp.actions[0] {
+            TermaniaAction::SendCommand { pane, command } => {
+                assert_eq!(*pane, 0);
+                assert_eq!(command, "ls");
+            }
+            _ => panic!("Expected SendCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_llm_response_fallback() {
+        let input = "Just some random text response";
+        let resp = parse_llm_response(input);
+        assert_eq!(resp.explanation, "Response from AI");
+        assert_eq!(resp.actions.len(), 1);
+        match &resp.actions[0] {
+            TermaniaAction::Message { text } => assert_eq!(text, input),
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_parse_legacy_action_send() {
+        let val: serde_json::Value = serde_json::json!({"type": "send", "pane": 0, "command": "ls"});
+        let action = parse_legacy_action(&val);
+        assert!(action.is_some());
+        match action.unwrap() {
+            TermaniaAction::SendCommand { pane, command } => {
+                assert_eq!(pane, 0);
+                assert_eq!(command, "ls");
+            }
+            _ => panic!("Expected SendCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_legacy_action_send_all() {
+        let val: serde_json::Value = serde_json::json!({"type": "send_all", "command": "clear"});
+        let action = parse_legacy_action(&val);
+        assert!(action.is_some());
+        match action.unwrap() {
+            TermaniaAction::SendToAll { command } => assert_eq!(command, "clear"),
+            _ => panic!("Expected SendToAll"),
+        }
+    }
+
+    #[test]
+    fn test_parse_legacy_action_unknown() {
+        let val: serde_json::Value = serde_json::json!({"type": "unknown_action"});
+        assert!(parse_legacy_action(&val).is_none());
+    }
+
+    #[test]
+    fn test_action_serialization_roundtrip() {
+        let action = TermaniaAction::SendCommand { pane: 2, command: "echo hello".to_string() };
+        let json = serde_json::to_string(&action).unwrap();
+        let parsed: TermaniaAction = serde_json::from_str(&json).unwrap();
+        match parsed {
+            TermaniaAction::SendCommand { pane, command } => {
+                assert_eq!(pane, 2);
+                assert_eq!(command, "echo hello");
+            }
+            _ => panic!("Roundtrip failed"),
+        }
+    }
+
+    #[test]
+    fn test_format_action_send_command() {
+        let action = TermaniaAction::SendCommand { pane: 0, command: "ls -la".to_string() };
+        let display = format_action_for_display(&action);
+        assert!(display.contains("[pane 0]"));
+        assert!(display.contains("ls -la"));
+    }
+
+    #[test]
+    fn test_format_action_message() {
+        let action = TermaniaAction::Message { text: "Hello world".to_string() };
+        let display = format_action_for_display(&action);
+        assert!(display.contains("Hello world"));
+    }
+
+    #[test]
+    fn test_format_action_spawn() {
+        let action = TermaniaAction::SpawnPane {
+            pane_type: "terminal".to_string(),
+            title: Some("Dev".to_string()),
+            command: None, cwd: None, url: None, content: None, watermark: None, row: None,
+        };
+        let display = format_action_for_display(&action);
+        assert!(display.contains("spawn"));
+        assert!(display.contains("Dev"));
+    }
+
+    #[test]
+    fn test_truncate_visible_text_short() {
+        let text = "line1\nline2\nline3";
+        assert_eq!(truncate_visible_text(text, 10), text);
+    }
+
+    #[test]
+    fn test_truncate_visible_text_long() {
+        let lines: Vec<String> = (0..100).map(|i| format!("line {}", i)).collect();
+        let text = lines.join("\n");
+        let result = truncate_visible_text(&text, 5);
+        assert_eq!(result.lines().count(), 5);
+        assert!(result.contains("line 99"));
+    }
+
+    #[test]
+    fn test_pane_context_with_subprocess_info() {
+        let ctx = PaneContext {
+            index: 0,
+            pane_type: "terminal".to_string(),
+            title: "Dev".to_string(),
+            visible_text: "$ ".to_string(),
+            subprocess_info: Some("Child processes:\n  pid=1234 cmd=node".to_string()),
+        };
+        assert!(ctx.subprocess_info.is_some());
+        assert!(ctx.subprocess_info.unwrap().contains("node"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_includes_panes() {
+        let panes = vec![
+            PaneContext {
+                index: 0,
+                pane_type: "terminal".to_string(),
+                title: "Shell".to_string(),
+                visible_text: "$ hello\n".to_string(),
+                subprocess_info: None,
+            },
+        ];
+        let prompt = build_system_prompt(&panes);
+        assert!(prompt.contains("Pane 0"));
+        assert!(prompt.contains("[terminal]"));
+        assert!(prompt.contains("Shell"));
+        assert!(prompt.contains("send_command"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_includes_subprocess_info() {
+        let panes = vec![
+            PaneContext {
+                index: 0,
+                pane_type: "terminal".to_string(),
+                title: "Dev".to_string(),
+                visible_text: "running".to_string(),
+                subprocess_info: Some("Child processes:\n  pid=5678 cmd=flutter ports=[8080]".to_string()),
+            },
+        ];
+        let prompt = build_system_prompt(&panes);
+        assert!(prompt.contains("flutter"));
+        assert!(prompt.contains("8080"));
+    }
 }

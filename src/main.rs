@@ -5,6 +5,7 @@ mod grid;
 mod llm;
 mod plugin;
 mod plugins;
+mod process_info;
 mod pty;
 mod renderer;
 mod terminal;
@@ -20,6 +21,12 @@ use plugins::terminal::TerminalPlugin;
 use plugins::webview::WebViewPlugin;
 use plugins::notes::NotesPlugin;
 use plugins::screen_capture::ScreenCapturePlugin;
+use plugins::file_browser::FileBrowserPlugin;
+use plugins::process_monitor::ProcessMonitorPlugin;
+use plugins::log_viewer::LogViewerPlugin;
+use plugins::markdown_preview::MarkdownPreviewPlugin;
+use plugins::system_info::SystemInfoPlugin;
+use plugins::git_status::GitStatusPlugin;
 
 /// Overlay mode: LLM-assisted or raw command
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +128,12 @@ fn create_pane_plugin(index: usize, pane_config: Option<&PaneConfig>, config: &C
         "webview" => Box::new(WebViewPlugin::new(index, pane_config)),
         "notes" => Box::new(NotesPlugin::new(index, pane_config)),
         "screen_capture" => Box::new(ScreenCapturePlugin::new(index, pane_config)),
+        "file_browser" => Box::new(FileBrowserPlugin::new(index, pane_config)),
+        "process_monitor" => Box::new(ProcessMonitorPlugin::new(index, pane_config)),
+        "log_viewer" => Box::new(LogViewerPlugin::new(index, pane_config)),
+        "markdown_preview" => Box::new(MarkdownPreviewPlugin::new(index, pane_config)),
+        "system_info" => Box::new(SystemInfoPlugin::new(index, pane_config)),
+        "git_status" => Box::new(GitStatusPlugin::new(index, pane_config)),
         _ => Box::new(TerminalPlugin::new(index, pane_config, config)),
     }
 }
@@ -341,6 +354,7 @@ impl TermaniaWindow {
             title: None, command: None, cwd: None, env: None,
             initial_commands: None, watermark: None, url: None,
             file: None, content: None, target: None, target_title: None,
+            path: None, refresh_ms: None, repo: None,
         });
         self.effective_panes_config.swap(idx, target);
         self.focused_pane = target;
@@ -391,6 +405,7 @@ impl TermaniaWindow {
                         title: None, command: None, cwd: None, env: None,
                         initial_commands: None, watermark: None, url: None,
                         file: None, content: None, target: None, target_title: None,
+                        path: None, refresh_ms: None, repo: None,
                     });
                 }
                 self.effective_panes_config[*pane].watermark = Some(watermark.clone());
@@ -449,6 +464,9 @@ impl TermaniaWindow {
                     content: content.clone(),
                     target: None,
                     target_title: None,
+                    path: None,
+                    refresh_ms: None,
+                    repo: None,
                 };
                 let idx = self.panes.len();
                 let mut new_pane = create_pane_plugin(idx, Some(&pane_config), config);
@@ -542,6 +560,9 @@ impl TermaniaWindow {
                     content: content.clone(),
                     target: None,
                     target_title: None,
+                    path: None,
+                    refresh_ms: None,
+                    repo: None,
                 };
                 let mut new_pane = create_pane_plugin(*pane, Some(&pane_config), config);
                 new_pane.init();
@@ -562,6 +583,7 @@ impl TermaniaWindow {
                         title: None, command: None, cwd: None, env: None,
                         initial_commands: None, watermark: None, url: None,
                         file: None, content: None, target: None, target_title: None,
+                        path: None, refresh_ms: None, repo: None,
                     });
                 }
                 self.effective_panes_config[*pane] = pane_config;
@@ -584,6 +606,7 @@ impl TermaniaWindow {
                         title: None, command: None, cwd: None, env: None,
                         initial_commands: None, watermark: None, url: None,
                         file: None, content: None, target: None, target_title: None,
+                        path: None, refresh_ms: None, repo: None,
                     });
                 }
                 self.effective_panes_config.swap(*a, *b);
@@ -980,11 +1003,17 @@ impl App {
                             }
                             // Gather pane context and send to LLM
                             let pane_contexts: Vec<llm::PaneContext> = tw.panes.iter().enumerate()
-                                .map(|(i, pane)| llm::PaneContext {
-                                    index: i,
-                                    pane_type: pane.pane_type_str().to_string(),
-                                    title: pane.title().to_string(),
-                                    visible_text: pane.visible_text(),
+                                .map(|(i, pane)| {
+                                    let subprocess_info = pane.child_pid().map(|pid| {
+                                        process_info::build_process_context(pid)
+                                    }).filter(|s| !s.is_empty());
+                                    llm::PaneContext {
+                                        index: i,
+                                        pane_type: pane.pane_type_str().to_string(),
+                                        title: pane.title().to_string(),
+                                        visible_text: pane.visible_text(),
+                                        subprocess_info,
+                                    }
                                 })
                                 .collect();
 

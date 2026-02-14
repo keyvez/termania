@@ -7,6 +7,12 @@ pub enum PaneType {
     WebView,
     Notes,
     ScreenCapture,
+    FileBrowser,
+    ProcessMonitor,
+    LogViewer,
+    MarkdownPreview,
+    SystemInfo,
+    GitStatus,
 }
 
 /// Data returned by a plugin for rendering
@@ -115,6 +121,9 @@ pub trait PanePlugin: Send {
     /// Set text content (notes panes only). Returns true if supported.
     fn set_content(&mut self, _content: &str) -> bool { false }
 
+    /// Get the child process PID (terminal panes only)
+    fn child_pid(&self) -> Option<u32> { None }
+
     /// Return the pane type as a string identifier
     fn pane_type_str(&self) -> &str {
         match self.pane_type() {
@@ -122,6 +131,12 @@ pub trait PanePlugin: Send {
             PaneType::WebView => "webview",
             PaneType::Notes => "notes",
             PaneType::ScreenCapture => "screen_capture",
+            PaneType::FileBrowser => "file_browser",
+            PaneType::ProcessMonitor => "process_monitor",
+            PaneType::LogViewer => "log_viewer",
+            PaneType::MarkdownPreview => "markdown_preview",
+            PaneType::SystemInfo => "system_info",
+            PaneType::GitStatus => "git_status",
         }
     }
 }

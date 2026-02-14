@@ -148,6 +148,12 @@ pub struct PaneConfig {
     pub target: Option<String>,
     /// Target window title — screen_capture plugin
     pub target_title: Option<String>,
+    /// Directory path — file_browser plugin
+    pub path: Option<String>,
+    /// Refresh interval in ms — process_monitor / system_info plugins
+    pub refresh_ms: Option<u64>,
+    /// Git repository path — git_status plugin
+    pub repo: Option<String>,
 }
 
 fn default_pane_type() -> String {
@@ -454,4 +460,146 @@ pub fn parse_hex_color(hex: &str) -> [f32; 4] {
         1.0
     };
     [r, g, b, a]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.grid.rows, 1);
+        assert_eq!(config.grid.cols, 1);
+        assert_eq!(config.grid.gap, 4);
+        assert_eq!(config.window.width, 1920);
+        assert_eq!(config.window.height, 1080);
+        assert_eq!(config.font.family, "SF Mono");
+        assert!(config.panes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hex_color_6digit() {
+        let [r, g, b, a] = parse_hex_color("#ff0000");
+        assert!((r - 1.0).abs() < 0.01);
+        assert!((g - 0.0).abs() < 0.01);
+        assert!((b - 0.0).abs() < 0.01);
+        assert!((a - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_8digit() {
+        let [r, g, b, a] = parse_hex_color("#ff000080");
+        assert!((r - 1.0).abs() < 0.01);
+        assert!((a - 0.502).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_no_hash() {
+        let [r, g, b, _] = parse_hex_color("00ff00");
+        assert!((r - 0.0).abs() < 0.01);
+        assert!((g - 1.0).abs() < 0.01);
+        assert!((b - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_expand_tilde_home() {
+        let result = expand_tilde("~");
+        assert!(!result.contains('~'));
+        assert!(result.starts_with('/'));
+    }
+
+    #[test]
+    fn test_expand_tilde_subpath() {
+        let result = expand_tilde("~/Documents");
+        assert!(!result.starts_with('~'));
+        assert!(result.ends_with("/Documents"));
+    }
+
+    #[test]
+    fn test_expand_tilde_no_tilde() {
+        assert_eq!(expand_tilde("/usr/local"), "/usr/local");
+    }
+
+    #[test]
+    fn test_session_config_default() {
+        let session = SessionConfig::default();
+        assert!(session.title.is_none());
+        assert!(session.rows.is_none());
+        assert!(session.cols.is_none());
+        assert!(session.panes.is_empty());
+    }
+
+    #[test]
+    fn test_effective_rows_without_session() {
+        let config = Config::default();
+        assert_eq!(config.effective_rows(None), 1);
+    }
+
+    #[test]
+    fn test_effective_rows_with_session_override() {
+        let config = Config::default();
+        let session = SessionConfig {
+            rows: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(config.effective_rows(Some(&session)), 3);
+    }
+
+    #[test]
+    fn test_effective_panes_prefers_session() {
+        let config = Config::default();
+        let session = SessionConfig {
+            panes: vec![PaneConfig {
+                pane_type: "webview".to_string(),
+                title: Some("Test".to_string()),
+                command: None, cwd: None, env: None,
+                initial_commands: None, watermark: None, url: None,
+                file: None, content: None, target: None, target_title: None,
+                path: None, refresh_ms: None, repo: None,
+            }],
+            ..Default::default()
+        };
+        let panes = config.effective_panes(Some(&session));
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].pane_type, "webview");
+    }
+
+    #[test]
+    fn test_pane_config_toml_deserialization() {
+        let toml_str = r#"
+            type = "terminal"
+            title = "Dev"
+            command = "zsh"
+            cwd = "~/projects"
+        "#;
+        let pane: PaneConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(pane.pane_type, "terminal");
+        assert_eq!(pane.title.unwrap(), "Dev");
+        assert_eq!(pane.command.unwrap(), "zsh");
+        assert_eq!(pane.cwd.unwrap(), "~/projects");
+    }
+
+    #[test]
+    fn test_pane_config_default_type() {
+        let toml_str = r#"
+            title = "Default"
+        "#;
+        let pane: PaneConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(pane.pane_type, "terminal");
+    }
+
+    #[test]
+    fn test_llm_config_defaults() {
+        let llm = LlmConfig::default();
+        assert_eq!(llm.provider, "anthropic");
+        assert!(llm.api_key.is_none());
+        assert_eq!(llm.max_tokens, 1024);
+    }
+
+    #[test]
+    fn test_color_config_has_16_ansi_colors() {
+        let colors = ColorConfig::default();
+        assert_eq!(colors.ansi.len(), 16);
+    }
 }

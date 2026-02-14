@@ -408,3 +408,88 @@ fn json_escape_string(s: &str) -> String {
     out.push('"');
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_json_escape_simple() {
+        assert_eq!(json_escape_string("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn test_json_escape_quotes() {
+        assert_eq!(json_escape_string(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn test_json_escape_newlines() {
+        assert_eq!(json_escape_string("a\nb"), r#""a\nb""#);
+    }
+
+    #[test]
+    fn test_json_escape_backslash() {
+        assert_eq!(json_escape_string(r"a\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn test_json_escape_tab() {
+        assert_eq!(json_escape_string("a\tb"), r#""a\tb""#);
+    }
+
+    #[test]
+    fn test_json_escape_control_chars() {
+        let result = json_escape_string("\x01");
+        assert_eq!(result, "\"\\u0001\"");
+    }
+
+    #[test]
+    fn test_extract_number_after() {
+        assert_eq!(extract_number_after(r#"{"subscribe": 3}"#, "subscribe"), Some(3));
+        assert_eq!(extract_number_after(r#"{"subscribe": 0}"#, "subscribe"), Some(0));
+        assert_eq!(extract_number_after(r#"{"send": 42, "input": "x"}"#, "send"), Some(42));
+    }
+
+    #[test]
+    fn test_extract_number_after_missing() {
+        assert_eq!(extract_number_after(r#"{"list": true}"#, "subscribe"), None);
+    }
+
+    #[test]
+    fn test_extract_quoted_value() {
+        let result = extract_quoted_value(r#"{"send": 0, "input": "hello world"}"#, "input");
+        assert_eq!(result, Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_extract_quoted_value_with_escapes() {
+        let result = extract_quoted_value(r#"{"input": "line1\nline2"}"#, "input");
+        assert_eq!(result, Some("line1\nline2".to_string()));
+    }
+
+    #[test]
+    fn test_extract_quoted_value_with_escaped_quote() {
+        let result = extract_quoted_value(r#"{"input": "say \"hi\""}"#, "input");
+        assert_eq!(result, Some("say \"hi\"".to_string()));
+    }
+
+    #[test]
+    fn test_extract_quoted_value_missing() {
+        let result = extract_quoted_value(r#"{"send": 0}"#, "input");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_text_tap_server_creation() {
+        let server = TextTapServer::new("/tmp/test_termania.sock");
+        assert!(server.drain_commands().is_empty());
+    }
+
+    #[test]
+    fn test_set_pane_count() {
+        let server = TextTapServer::new("/tmp/test_termania2.sock");
+        server.set_pane_count(5);
+        assert_eq!(*server.pane_count.lock().unwrap(), 5);
+    }
+}

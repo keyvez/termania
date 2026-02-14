@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ config.title }}{% endblock %} — GPU-Accelerated Multi-Pane Terminal</title>
+    <meta name="description" content="{% block description %}{{ config.description }}{% endblock %}">
+    <link rel="stylesheet" href="{{ get_url(path='css/style.css') }}">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-inner">
+            <a href="{{ get_url(path='/') }}" class="nav-logo">
+                <span class="nav-logo-icon">⬡</span>
+                <span class="nav-logo-text">Termania</span>
+            </a>
+            <div class="nav-links">
+                <a href="{{ get_url(path='docs/installation') }}">Install</a>
+                <a href="{{ get_url(path='docs/configuration') }}">Config</a>
+                <a href="{{ get_url(path='docs/plugins') }}">Plugins</a>
+                <a href="{{ get_url(path='docs/text-tap-api') }}">API</a>
+                <a href="{{ get_url(path='docs/keyboard-shortcuts') }}">Shortcuts</a>
+                <a href="https://github.com/anthropics/termania" class="nav-github" rel="noopener noreferrer" target="_blank">GitHub</a>
+            </div>
+            <button class="nav-toggle" aria-label="Toggle navigation" onclick="document.querySelector('.nav-links').classList.toggle('nav-links-open')">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="footer-inner">
+            <div class="footer-cols">
+                <div class="footer-col">
+                    <h4>Documentation</h4>
+                    <a href="{{ get_url(path='docs/installation') }}">Installation</a>
+                    <a href="{{ get_url(path='docs/configuration') }}">Configuration</a>
+                    <a href="{{ get_url(path='docs/keyboard-shortcuts') }}">Keyboard Shortcuts</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Features</h4>
+                    <a href="{{ get_url(path='docs/plugins') }}">Plugins</a>
+                    <a href="{{ get_url(path='docs/text-tap-api') }}">Text Tap API</a>
+                    <a href="{{ get_url(path='examples/') }}">Examples</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Project</h4>
+                    <a href="https://github.com/anthropics/termania" rel="noopener noreferrer" target="_blank">GitHub</a>
+                    <a href="https://github.com/anthropics/termania/issues" rel="noopener noreferrer" target="_blank">Issues</a>
+                    <a href="https://crates.io/crates/termania" rel="noopener noreferrer" target="_blank">crates.io</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>Termania is MIT-licensed open source software.</p>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

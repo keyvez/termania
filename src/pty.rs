@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 /// Manages a pseudo-terminal (PTY) for a child process
 pub struct Pty {
     master: OwnedFd,
-    _child_pid: u32,
+    child_pid: u32,
 }
 
 impl Pty {
@@ -149,7 +149,7 @@ impl Pty {
         // Actually, we keep the OwnedFd and it will close on drop
         Ok(Self {
             master: master_fd,
-            _child_pid: pid as u32,
+            child_pid: pid as u32,
         })
     }
 
@@ -190,9 +190,14 @@ impl Pty {
     /// Check if the child process is still alive
     pub fn is_alive(&self) -> bool {
         let mut status: libc::c_int = 0;
-        let result = unsafe { libc::waitpid(self._child_pid as i32, &mut status, libc::WNOHANG) };
+        let result = unsafe { libc::waitpid(self.child_pid as i32, &mut status, libc::WNOHANG) };
         // waitpid returns 0 if child is still running, >0 if exited, -1 on error
         result == 0
+    }
+
+    /// Get the child process PID
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid
     }
 
     /// Resize the PTY

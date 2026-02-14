@@ -136,4 +136,8 @@ impl PanePlugin for TerminalPlugin {
     fn is_native_view(&self) -> bool {
         false
     }
+
+    fn child_pid(&self) -> Option<u32> {
+        self.terminal.child_pid()
+    }
 }

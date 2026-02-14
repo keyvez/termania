@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block title %}Termania{% endblock %}
+{% block description %}Termania is a GPU-accelerated multi-pane terminal emulator for macOS with LLM integration, a plugin system, and the Text Tap API for external control.{% endblock %}
+
+{% block content %}
+<!-- Hero -->
+<section class="hero">
+    <div class="hero-inner">
+        <h1 class="hero-title">Termania</h1>
+        <p class="hero-tagline">The GPU-accelerated multi-pane terminal</p>
+        <p class="hero-sub">A grid-based terminal emulator with LLM integration, 10 plugin types, and a Unix socket API for external control. Built with wgpu and Rust.</p>
+        <div class="hero-install">
+            <div class="hero-install-label">Install with Cargo</div>
+            <div class="hero-install-cmd" onclick="navigator.clipboard.writeText('cargo install termania')">
+                <code>cargo install termania</code>
+                <span class="hero-install-copy" title="Copy to clipboard">&#x2398;</span>
+            </div>
+        </div>
+        <div class="hero-links">
+            <a href="{{ get_url(path='docs/installation') }}" class="btn btn-primary">Get Started</a>
+            <a href="https://github.com/anthropics/termania" class="btn btn-secondary" rel="noopener noreferrer" target="_blank">View on GitHub</a>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section class="features" id="features">
+    <div class="section-inner">
+        <h2 class="section-title">Built for Power Users</h2>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">&#x25A6;</div>
+                <h3>Multi-Pane Grid</h3>
+                <p>Tile terminals in a configurable grid layout. Resize dynamically, swap panes with keyboard shortcuts, and broadcast input to all panes simultaneously.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#x26A1;</div>
+                <h3>GPU Rendering</h3>
+                <p>Every glyph is rendered on the GPU via wgpu. Buttery-smooth scrolling, zero tearing, and efficient redraw even with dozens of active panes.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#x2728;</div>
+                <h3>LLM Integration</h3>
+                <p>Open the command overlay and describe what you want in natural language. Supports Anthropic, OpenAI, Ollama, and any OpenAI-compatible endpoint.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#x1F50C;</div>
+                <h3>Text Tap API</h3>
+                <p>A Unix domain socket server that lets external processes subscribe to pane output, send input, and execute structured actions. Scriptable via JSON.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#x1F9E9;</div>
+                <h3>10 Plugin Types</h3>
+                <p>Terminal, WebView, Notes, Screen Capture, File Browser, Process Monitor, Log Viewer, Markdown Preview, System Info, and Git Status &mdash; all in one window.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#x2699;</div>
+                <h3>TOML Config</h3>
+                <p>Two-file configuration: <code>config.toml</code> for appearance and <code>termania.toml</code> for session layout. Per-project sessions load automatically.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Quick Start -->
+<section class="quickstart" id="quickstart">
+    <div class="section-inner">
+        <h2 class="section-title">Quick Start</h2>
+        <div class="quickstart-grid">
+            <div class="quickstart-step">
+                <div class="quickstart-num">1</div>
+                <h3>Install</h3>
+                <pre><code>cargo install termania</code></pre>
+            </div>
+            <div class="quickstart-step">
+                <div class="quickstart-num">2</div>
+                <h3>Create a session file</h3>
+                <pre><code># termania.toml
+title = "My Project"
+rows = 2
+cols = 2
+
+[[panes]]
+title = "Editor"
+cwd = "~/projects/myapp"
+watermark = "EDIT"
+
+[[panes]]
+title = "Server"
+cwd = "~/projects/myapp"
+initial_commands = ["npm run dev"]
+
+[[panes]]
+title = "Tests"
+cwd = "~/projects/myapp"
+initial_commands = ["cargo watch -x test"]
+
+[[panes]]
+type = "webview"
+title = "Docs"
+url = "http://localhost:3000"</code></pre>
+            </div>
+            <div class="quickstart-step">
+                <div class="quickstart-num">3</div>
+                <h3>Launch</h3>
+                <pre><code># From your project directory (auto-loads ./termania.toml)
+termania
+
+# Or specify a session file explicitly
+termania path/to/session.toml</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Comparison -->
+<section class="comparison" id="comparison">
+    <div class="section-inner">
+        <h2 class="section-title">How Termania Compares</h2>
+        <div class="table-wrap">
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th class="highlight">Termania</th>
+                        <th>iTerm2</th>
+                        <th>tmux</th>
+                        <th>WezTerm</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>GPU-accelerated rendering</td>
+                        <td class="highlight yes">wgpu</td>
+                        <td class="no">Metal (partial)</td>
+                        <td class="no">None</td>
+                        <td class="yes">OpenGL / Metal</td>
+                    </tr>
+                    <tr>
+                        <td>Multi-pane grid layout</td>
+                        <td class="highlight yes">Native grid</td>
+                        <td class="yes">Split panes</td>
+                        <td class="yes">Splits / windows</td>
+                        <td class="yes">Splits / tabs</td>
+                    </tr>
+                    <tr>
+                        <td>LLM integration</td>
+                        <td class="highlight yes">Built-in</td>
+                        <td class="no">No</td>
+                        <td class="no">No</td>
+                        <td class="no">No</td>
+                    </tr>
+                    <tr>
+                        <td>External control API</td>
+                        <td class="highlight yes">Text Tap (Unix socket)</td>
+                        <td class="yes">AppleScript / Python</td>
+                        <td class="yes">tmux CLI</td>
+                        <td class="yes">CLI / IPC</td>
+                    </tr>
+                    <tr>
+                        <td>Plugin system</td>
+                        <td class="highlight yes">10 built-in types</td>
+                        <td class="no">No</td>
+                        <td class="no">No</td>
+                        <td class="no">Lua scripting</td>
+                    </tr>
+                    <tr>
+                        <td>Embedded web views</td>
+                        <td class="highlight yes">WKWebView</td>
+                        <td class="no">No</td>
+                        <td class="no">No</td>
+                        <td class="no">No</td>
+                    </tr>
+                    <tr>
+                        <td>Broadcast input</td>
+                        <td class="highlight yes">Yes</td>
+                        <td class="yes">Yes</td>
+                        <td class="yes">Yes</td>
+                        <td class="no">No</td>
+                    </tr>
+                    <tr>
+                        <td>Config format</td>
+                        <td class="highlight">TOML</td>
+                        <td>Plist / GUI</td>
+                        <td>.tmux.conf</td>
+                        <td>Lua</td>
+                    </tr>
+                    <tr>
+                        <td>Language</td>
+                        <td class="highlight">Rust</td>
+                        <td>Obj-C / Swift</td>
+                        <td>C</td>
+                        <td>Rust</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+    <div class="section-inner">
+        <h2>Ready to try Termania?</h2>
+        <p>Read the installation guide or dive straight into the configuration reference.</p>
+        <div class="cta-links">
+            <a href="{{ get_url(path='docs/installation') }}" class="btn btn-primary">Installation Guide</a>
+            <a href="{{ get_url(path='docs/configuration') }}" class="btn btn-secondary">Configuration Docs</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

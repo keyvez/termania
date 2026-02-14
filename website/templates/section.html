@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }}{% endblock %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+    <aside class="docs-sidebar">
+        <nav class="docs-nav">
+            <h4>Documentation</h4>
+            <a href="{{ get_url(path='docs/installation') }}">Installation</a>
+            <a href="{{ get_url(path='docs/configuration') }}">Configuration</a>
+            <a href="{{ get_url(path='docs/keyboard-shortcuts') }}">Keyboard Shortcuts</a>
+            <a href="{{ get_url(path='docs/plugins') }}">Plugins</a>
+            <a href="{{ get_url(path='docs/text-tap-api') }}">Text Tap API</a>
+            <h4>Resources</h4>
+            <a href="{{ get_url(path='examples/') }}">Examples</a>
+            <a href="https://github.com/anthropics/termania" rel="noopener noreferrer" target="_blank">GitHub</a>
+        </nav>
+    </aside>
+    <article class="docs-content">
+        <h1>{{ section.title }}</h1>
+        {{ section.content | safe }}
+        {% if section.pages %}
+        <div class="page-list">
+            {% for page in section.pages %}
+            <a href="{{ page.permalink }}" class="page-list-item">
+                <h3>{{ page.title }}</h3>
+                {% if page.description %}
+                <p>{{ page.description }}</p>
+                {% endif %}
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </article>
+</div>
+{% endblock %}

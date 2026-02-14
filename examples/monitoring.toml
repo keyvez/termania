@@ -1,0 +1,33 @@
+# System Monitoring
+# A focused monitoring workspace for keeping an eye on system health.
+
+title = "System Monitoring"
+rows = 2
+cols = 2
+
+# --- Row 1: System info + Process monitor (fast refresh) ---
+
+[[panes]]
+type = "system_info"
+title = "System Overview"
+refresh_ms = 3000
+
+[[panes]]
+type = "process_monitor"
+title = "Process Monitor"
+refresh_ms = 1000
+
+# --- Row 2: Log viewer + Monitoring terminal ---
+
+[[panes]]
+type = "log_viewer"
+title = "System Log"
+file = "/var/log/system.log"
+
+[[panes]]
+type = "terminal"
+title = "Monitor Shell"
+command = "zsh"
+cwd = "~"
+initial_commands = ["echo 'Monitoring terminal ready'", "top -l 1 | head -20"]
+watermark = "MON"

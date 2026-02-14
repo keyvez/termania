@@ -134,3 +134,137 @@ impl GridManager {
         self.row_cols.iter().sum()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grid_new() {
+        let grid = GridManager::new(2, 3);
+        assert_eq!(grid.rows(), 2);
+        assert_eq!(grid.total_panes(), 6);
+        assert_eq!(grid.cols_in_row(0), 3);
+        assert_eq!(grid.cols_in_row(1), 3);
+    }
+
+    #[test]
+    fn test_grid_1x1() {
+        let grid = GridManager::new(1, 1);
+        assert_eq!(grid.rows(), 1);
+        assert_eq!(grid.total_panes(), 1);
+    }
+
+    #[test]
+    fn test_pane_position_2x2() {
+        let grid = GridManager::new(2, 2);
+        assert_eq!(grid.pane_position(0), Some((0, 0)));
+        assert_eq!(grid.pane_position(1), Some((0, 1)));
+        assert_eq!(grid.pane_position(2), Some((1, 0)));
+        assert_eq!(grid.pane_position(3), Some((1, 1)));
+        assert_eq!(grid.pane_position(4), None);
+    }
+
+    #[test]
+    fn test_flat_index() {
+        let grid = GridManager::new(2, 3);
+        assert_eq!(grid.flat_index(0, 0), Some(0));
+        assert_eq!(grid.flat_index(0, 2), Some(2));
+        assert_eq!(grid.flat_index(1, 0), Some(3));
+        assert_eq!(grid.flat_index(1, 2), Some(5));
+    }
+
+    #[test]
+    fn test_flat_index_out_of_bounds() {
+        let grid = GridManager::new(2, 2);
+        assert_eq!(grid.flat_index(2, 0), None);
+        assert_eq!(grid.flat_index(0, 3), None);
+    }
+
+    #[test]
+    fn test_add_col_to_row() {
+        let mut grid = GridManager::new(2, 2);
+        grid.add_col_to_row(0);
+        assert_eq!(grid.cols_in_row(0), 3);
+        assert_eq!(grid.cols_in_row(1), 2);
+        assert_eq!(grid.total_panes(), 5);
+    }
+
+    #[test]
+    fn test_remove_col_from_row() {
+        let mut grid = GridManager::new(2, 3);
+        let removed = grid.remove_col_from_row(0);
+        assert!(!removed);
+        assert_eq!(grid.cols_in_row(0), 2);
+    }
+
+    #[test]
+    fn test_remove_col_removes_row() {
+        let mut grid = GridManager::new(2, 1);
+        let removed = grid.remove_col_from_row(0);
+        assert!(removed);
+        assert_eq!(grid.rows(), 1);
+    }
+
+    #[test]
+    fn test_add_row() {
+        let mut grid = GridManager::new(1, 2);
+        grid.add_row();
+        assert_eq!(grid.rows(), 2);
+        assert_eq!(grid.cols_in_row(1), 1);
+        assert_eq!(grid.total_panes(), 3);
+    }
+
+    #[test]
+    fn test_cols_in_row_out_of_range() {
+        let grid = GridManager::new(1, 2);
+        assert_eq!(grid.cols_in_row(5), 0);
+    }
+
+    #[test]
+    fn test_jagged_grid() {
+        let mut grid = GridManager::new(1, 2);
+        grid.add_row();
+        grid.add_col_to_row(1);
+        grid.add_col_to_row(1);
+        // Row 0: 2 panes, Row 1: 3 panes
+        assert_eq!(grid.total_panes(), 5);
+        assert_eq!(grid.pane_position(2), Some((1, 0)));
+        assert_eq!(grid.pane_position(4), Some((1, 2)));
+    }
+
+    #[test]
+    fn test_compute_layout_basic() {
+        let config = Config::default();
+        let grid = GridManager::new(1, 1);
+        let layouts = grid.compute_layout(800, 600, &config, 1.0);
+        assert_eq!(layouts.len(), 1);
+        assert!(layouts[0].width > 0.0);
+        assert!(layouts[0].height > 0.0);
+    }
+
+    #[test]
+    fn test_compute_layout_2x2() {
+        let config = Config::default();
+        let grid = GridManager::new(2, 2);
+        let layouts = grid.compute_layout(800, 600, &config, 1.0);
+        assert_eq!(layouts.len(), 4);
+        // Second pane should be to the right of the first
+        assert!(layouts[1].x > layouts[0].x);
+        // Third pane should be below the first
+        assert!(layouts[2].y > layouts[0].y);
+    }
+
+    #[test]
+    fn test_compute_layout_all_positive() {
+        let config = Config::default();
+        let grid = GridManager::new(3, 3);
+        let layouts = grid.compute_layout(1920, 1080, &config, 2.0);
+        for layout in &layouts {
+            assert!(layout.x >= 0.0);
+            assert!(layout.y >= 0.0);
+            assert!(layout.width > 0.0);
+            assert!(layout.height > 0.0);
+        }
+    }
+}
