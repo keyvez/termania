@@ -75,7 +75,7 @@ const App = struct {
 
         var tap = text_tap_mod.TextTapServer.init(allocator, cfg.text_tap.socket_path);
         tap.setPaneCount(total_panes);
-        if (cfg.text_tap.enabled) tap.start();
+        if (cfg.text_tap.enabled) tap.start() catch {};
 
         return .{
             .allocator = allocator,

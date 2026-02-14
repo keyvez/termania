@@ -324,6 +324,25 @@ const Utf8Decoder = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Semantic zones (OSC 133 — shell integration / FinalTerm protocol)
+// ---------------------------------------------------------------------------
+
+pub const SemanticZoneType = enum {
+    prompt,
+    input,
+    output,
+};
+
+pub const SemanticZone = struct {
+    zone_type: SemanticZoneType,
+    start_row: usize,
+    start_col: usize,
+    end_row: usize,
+    end_col: usize,
+    exit_code: ?i32, // only for output zones
+};
+
+// ---------------------------------------------------------------------------
 // Terminal
 // ---------------------------------------------------------------------------
 
@@ -370,6 +389,11 @@ pub const Terminal = struct {
     has_error: bool = false,
     error_timestamp: ?i64 = null,
 
+    /// Semantic zone tracking (OSC 133 — shell integration).
+    semantic_zones: std.ArrayList(SemanticZone),
+    current_zone_type: ?SemanticZoneType = null,
+    last_exit_code: ?i32 = null,
+
     /// Initialize a new terminal with the given dimensions.
     pub fn init(allocator: Allocator, cols: usize, rows: usize, title_str: []const u8) !*Terminal {
         const self = try allocator.create(Terminal);
@@ -388,6 +412,7 @@ pub const Terminal = struct {
             .default_title = default_title,
             .scrollback = std.ArrayList([]Cell).init(allocator),
             .scroll_bottom = rows -| 1,
+            .semantic_zones = std.ArrayList(SemanticZone).init(allocator),
         };
         return self;
     }
@@ -400,6 +425,7 @@ pub const Terminal = struct {
             self.allocator.free(row);
         }
         self.scrollback.deinit();
+        self.semantic_zones.deinit();
         if (self.alt_cells) |ac| self.allocator.free(ac);
         self.allocator.destroy(self);
     }
