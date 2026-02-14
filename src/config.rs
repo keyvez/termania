@@ -90,14 +90,117 @@ pub struct TextTapConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneConfig {
+    /// Pane type: "terminal" (default), "webview", "notes", "screen_capture"
+    #[serde(rename = "type", default = "default_pane_type")]
+    pub pane_type: String,
     /// Custom title for this pane
     pub title: Option<String>,
-    /// Command to run (defaults to $SHELL)
+    /// Command to run (defaults to $SHELL) — terminal plugin
     pub command: Option<String>,
-    /// Working directory
+    /// Working directory — terminal plugin
     pub cwd: Option<String>,
-    /// Environment variables
+    /// Environment variables — terminal plugin
     pub env: Option<Vec<(String, String)>>,
+    /// Commands to run on startup (each sent as input with \r) — terminal plugin
+    pub initial_commands: Option<Vec<String>>,
+    /// Large faded watermark text behind terminal content — terminal plugin
+    pub watermark: Option<String>,
+    /// URL to load — webview plugin
+    pub url: Option<String>,
+    /// File path for persistent content — notes plugin
+    pub file: Option<String>,
+    /// Initial content for notes plugin (when no file is specified)
+    pub content: Option<String>,
+    /// Target app bundle ID — screen_capture plugin
+    pub target: Option<String>,
+    /// Target window title — screen_capture plugin
+    pub target_title: Option<String>,
+}
+
+fn default_pane_type() -> String {
+    "terminal".to_string()
+}
+
+/// Session configuration loaded from sessions.toml
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    /// Window title (overrides config.toml)
+    pub title: Option<String>,
+    /// Grid rows (overrides config.toml)
+    pub rows: Option<usize>,
+    /// Grid cols (overrides config.toml)
+    pub cols: Option<usize>,
+    /// Pane definitions
+    pub panes: Vec<PaneConfig>,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            title: None,
+            rows: None,
+            cols: None,
+            panes: Vec::new(),
+        }
+    }
+}
+
+impl SessionConfig {
+    /// Load session config from an explicit path, or fall back to the default
+    /// lookup order: ./termania.toml → ~/.config/termania/termania.toml.
+    pub fn load(explicit_path: Option<&str>) -> Option<Self> {
+        // If an explicit path was provided, use it (and fail loudly if invalid)
+        if let Some(path) = explicit_path {
+            let path = PathBuf::from(expand_tilde(path));
+            if !path.exists() {
+                log::error!("Session file not found: {}", path.display());
+                eprintln!("error: session file not found: {}", path.display());
+                std::process::exit(1);
+            }
+            return Self::load_from(&path);
+        }
+
+        // 1. Check ./termania.toml (current working directory)
+        let local_path = PathBuf::from("termania.toml");
+        if local_path.exists() {
+            if let Some(session) = Self::load_from(&local_path) {
+                return Some(session);
+            }
+        }
+
+        // 2. Check ~/.config/termania/termania.toml
+        let global_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("termania")
+            .join("termania.toml");
+        if global_path.exists() {
+            if let Some(session) = Self::load_from(&global_path) {
+                return Some(session);
+            }
+        }
+
+        None
+    }
+
+    fn load_from(path: &PathBuf) -> Option<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => match toml::from_str(&contents) {
+                Ok(session) => {
+                    log::info!("Loaded session config from {}", path.display());
+                    Some(session)
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse session config {}: {}", path.display(), e);
+                    None
+                }
+            },
+            Err(e) => {
+                log::warn!("Failed to read session config {}: {}", path.display(), e);
+                None
+            }
+        }
+    }
 }
 
 // Defaults
@@ -118,8 +221,8 @@ impl Default for Config {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            family: "Menlo".to_string(),
-            size: 18.0,
+            family: "SF Mono".to_string(),
+            size: 14.0,
             bold_family: None,
             line_height: 1.2,
             letter_spacing: 0.0,
@@ -130,12 +233,12 @@ impl Default for FontConfig {
 impl Default for GridConfig {
     fn default() -> Self {
         Self {
-            rows: 2,
-            cols: 2,
+            rows: 3,
+            cols: 3,
             gap: 4,
-            inner_padding: 8,
-            outer_padding: 8,
-            title_bar_height: 28,
+            inner_padding: 4,
+            outer_padding: 4,
+            title_bar_height: 24,
         }
     }
 }
@@ -143,8 +246,8 @@ impl Default for GridConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            width: 1600,
-            height: 1000,
+            width: 1920,
+            height: 1080,
             title: "Termania".to_string(),
         }
     }
@@ -153,33 +256,33 @@ impl Default for WindowConfig {
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
-            background: "#1a1b26".to_string(),
-            foreground: "#c0caf5".to_string(),
-            cursor: "#c0caf5".to_string(),
-            selection: "#33467c".to_string(),
-            border: "#3b4261".to_string(),
-            border_focused: "#7aa2f7".to_string(),
-            title_bg: "#24283b".to_string(),
-            title_fg: "#a9b1d6".to_string(),
+            background: "#010409".to_string(),
+            foreground: "#e6edf3".to_string(),
+            cursor: "#f0f6fc".to_string(),
+            selection: "#264f78".to_string(),
+            border: "#30363d".to_string(),
+            border_focused: "#58a6ff".to_string(),
+            title_bg: "#0d1117".to_string(),
+            title_fg: "#e6edf3".to_string(),
             ansi: [
                 // Normal colors
-                "#15161e".to_string(), // black
-                "#f7768e".to_string(), // red
-                "#9ece6a".to_string(), // green
-                "#e0af68".to_string(), // yellow
-                "#7aa2f7".to_string(), // blue
-                "#bb9af7".to_string(), // magenta
-                "#7dcfff".to_string(), // cyan
-                "#a9b1d6".to_string(), // white
+                "#0d1117".to_string(), // black
+                "#ff7b72".to_string(), // red
+                "#3fb950".to_string(), // green
+                "#d29922".to_string(), // yellow
+                "#58a6ff".to_string(), // blue
+                "#bc8cff".to_string(), // magenta
+                "#39d353".to_string(), // cyan
+                "#c9d1d9".to_string(), // white
                 // Bright colors
-                "#414868".to_string(), // bright black
-                "#f7768e".to_string(), // bright red
-                "#9ece6a".to_string(), // bright green
-                "#e0af68".to_string(), // bright yellow
-                "#7aa2f7".to_string(), // bright blue
-                "#bb9af7".to_string(), // bright magenta
-                "#7dcfff".to_string(), // bright cyan
-                "#c0caf5".to_string(), // bright white
+                "#484f58".to_string(), // bright black
+                "#ffa198".to_string(), // bright red
+                "#56d364".to_string(), // bright green
+                "#e3b341".to_string(), // bright yellow
+                "#79c0ff".to_string(), // bright blue
+                "#d2a8ff".to_string(), // bright magenta
+                "#56d364".to_string(), // bright cyan
+                "#f0f6fc".to_string(), // bright white
             ],
         }
     }
@@ -228,11 +331,57 @@ impl Config {
         Config::default()
     }
 
-    fn config_path() -> PathBuf {
+    pub fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("termania")
             .join("config.toml")
+    }
+
+    /// Get effective window title, preferring session override
+    pub fn effective_title(&self, session: Option<&SessionConfig>) -> String {
+        session
+            .and_then(|s| s.title.clone())
+            .unwrap_or_else(|| self.window.title.clone())
+    }
+
+    /// Get effective grid rows, preferring session override
+    pub fn effective_rows(&self, session: Option<&SessionConfig>) -> usize {
+        session
+            .and_then(|s| s.rows)
+            .unwrap_or(self.grid.rows)
+    }
+
+    /// Get effective grid cols, preferring session override
+    pub fn effective_cols(&self, session: Option<&SessionConfig>) -> usize {
+        session
+            .and_then(|s| s.cols)
+            .unwrap_or(self.grid.cols)
+    }
+
+    /// Get effective panes, preferring session panes, then config panes
+    pub fn effective_panes<'a>(&'a self, session: Option<&'a SessionConfig>) -> &'a [PaneConfig] {
+        if let Some(s) = session {
+            if !s.panes.is_empty() {
+                return &s.panes;
+            }
+        }
+        &self.panes
+    }
+}
+
+/// Expand `~` at the start of a path to the user's home directory
+pub fn expand_tilde(path: &str) -> String {
+    if path == "~" {
+        dirs::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| format!("{}/{}", h.to_string_lossy(), rest))
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
     }
 }
 

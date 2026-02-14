@@ -20,6 +20,7 @@ pollster = "0.4"
 
 # Font handling
 cosmic-text = "0.12"
+ttf-parser = "0.20"
 
 # Terminal emulation
 vte = "0.13"
@@ -35,6 +36,18 @@ dirs = "5"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+
+# Image encoding (for screenshot feature)
+image = { version = "0.24", default-features = false, features = ["png"] }
+
+# macOS native views (WebView, Notes plugins)
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSURLRequest", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSColor", "NSFont", "NSScrollView", "NSTextView", "NSText", "NSResponder", "NSWindow"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "WKNavigation"] }
 
 [profile.release]
 opt-level = 3

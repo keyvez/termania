@@ -187,6 +187,14 @@ impl Pty {
         }
     }
 
+    /// Check if the child process is still alive
+    pub fn is_alive(&self) -> bool {
+        let mut status: libc::c_int = 0;
+        let result = unsafe { libc::waitpid(self._child_pid as i32, &mut status, libc::WNOHANG) };
+        // waitpid returns 0 if child is still running, >0 if exited, -1 on error
+        result == 0
+    }
+
     /// Resize the PTY
     pub fn resize(&self, cols: u16, rows: u16) {
         let winsize = libc::winsize {

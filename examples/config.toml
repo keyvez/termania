@@ -1,73 +1,64 @@
 # Termania Configuration
 # Place this at: ~/.config/termania/config.toml
+#
+# This file controls how Termania looks (font, colors, layout).
+# For what runs in each pane (commands, cwd, watermarks), see sessions.toml.
 
 [font]
-family = "Menlo"          # Font family (e.g., "JetBrains Mono", "SF Mono", "Fira Code")
-size = 18.0               # Font size in points - go big for grid overview!
+family = "SF Mono"        # Font family (matches Terminal.app default)
+size = 14.0               # Font size in points (smaller than Terminal.app's 20pt to fit 3x3 grid)
 line_height = 1.2         # Line height multiplier
 letter_spacing = 0.0      # Extra letter spacing in pixels
-# bold_family = "Menlo"   # Optional: separate bold font
+# bold_family = "Menlo"   # Optional: separate bold font family
 
 [grid]
-rows = 2                  # Number of rows in the pane grid
-cols = 2                  # Number of columns in the pane grid
+rows = 3                  # Number of rows in the pane grid
+cols = 3                  # Number of columns in the pane grid
 gap = 4                   # Gap between panes (pixels)
-inner_padding = 8         # Padding inside each pane (pixels)
-outer_padding = 8         # Padding around the entire grid (pixels)
-title_bar_height = 28     # Height of each pane's title bar (pixels)
+inner_padding = 4         # Padding inside each pane (pixels)
+outer_padding = 4         # Padding around the entire grid (pixels)
+title_bar_height = 24     # Height of each pane's title bar (pixels)
 
 [window]
-width = 1600              # Initial window width
-height = 1000             # Initial window height
-title = "Termania"        # Window title
+width = 1920              # Initial window width
+height = 1080             # Initial window height
+title = "Termania"        # Window title (overridden by sessions.toml if present)
 
+# High-contrast dark color scheme
 [colors]
-background = "#1a1b26"    # Terminal background
-foreground = "#c0caf5"    # Default text color
-cursor = "#c0caf5"        # Cursor color
-selection = "#33467c"     # Selection highlight
-border = "#3b4261"        # Unfocused pane border
-border_focused = "#7aa2f7" # Focused pane border
-title_bg = "#24283b"      # Title bar background
-title_fg = "#a9b1d6"      # Title bar text
+background = "#010409"    # Near-black background
+foreground = "#e6edf3"    # Bright white foreground
+cursor = "#f0f6fc"        # High-visibility cursor
+selection = "#264f78"     # Selection highlight
+border = "#30363d"        # Unfocused pane border
+border_focused = "#58a6ff" # Focused pane border (bright blue)
+title_bg = "#0d1117"      # Title bar background
+title_fg = "#e6edf3"      # Title bar text (bright)
 
-# ANSI color palette (16 colors: 8 normal + 8 bright)
+# ANSI color palette (16 colors: 8 normal + 8 bright) — high contrast
 ansi = [
-    "#15161e",  # black
-    "#f7768e",  # red
-    "#9ece6a",  # green
-    "#e0af68",  # yellow
-    "#7aa2f7",  # blue
-    "#bb9af7",  # magenta
-    "#7dcfff",  # cyan
-    "#a9b1d6",  # white
-    "#414868",  # bright black
-    "#f7768e",  # bright red
-    "#9ece6a",  # bright green
-    "#e0af68",  # bright yellow
-    "#7aa2f7",  # bright blue
-    "#bb9af7",  # bright magenta
-    "#7dcfff",  # bright cyan
-    "#c0caf5",  # bright white
+    "#0d1117",  # 0  black
+    "#ff7b72",  # 1  red
+    "#3fb950",  # 2  green
+    "#d29922",  # 3  yellow
+    "#58a6ff",  # 4  blue
+    "#bc8cff",  # 5  magenta
+    "#39d353",  # 6  cyan
+    "#c9d1d9",  # 7  white
+    "#484f58",  # 8  bright black
+    "#ffa198",  # 9  bright red
+    "#56d364",  # 10 bright green
+    "#e3b341",  # 11 bright yellow
+    "#79c0ff",  # 12 bright blue
+    "#d2a8ff",  # 13 bright magenta
+    "#56d364",  # 14 bright cyan
+    "#f0f6fc",  # 15 bright white
 ]
 
 [text_tap]
 enabled = true
 socket_path = "/tmp/termania.sock"
 
-# Per-pane configuration (optional)
-# Each [[panes]] entry configures one pane in grid order (left-to-right, top-to-bottom)
-
-[[panes]]
-title = "Agent 1"
-# command = "/bin/zsh"
-# cwd = "/path/to/project"
-
-[[panes]]
-title = "Agent 2"
-
-[[panes]]
-title = "Build"
-
-[[panes]]
-title = "Logs"
+# Per-pane configuration has moved to termania.toml!
+# See examples/sessions.toml for session/pane configuration.
+# You can still define [[panes]] here as a fallback if no termania.toml is found.

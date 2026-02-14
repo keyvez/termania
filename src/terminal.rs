@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::config::Config;
+use crate::config::{Config, PaneConfig};
 use crate::pty::Pty;
 
 /// A single terminal cell
@@ -73,6 +73,21 @@ pub struct Terminal {
     alt_cells: Option<Vec<Vec<Cell>>>,
     /// Whether we're on the alternate screen
     on_alt_screen: bool,
+    /// VTE parser state machine — persists across read() calls so escape
+    /// sequences that span multiple reads are handled correctly
+    vte_parser: vte::Parser,
+    /// Commands to send once the shell is ready
+    pending_initial_commands: Vec<String>,
+    /// Timestamp of last PTY output, used to detect shell idle
+    last_output_time: Option<std::time::Instant>,
+    /// Whether initial commands have been sent
+    initial_commands_sent: bool,
+    /// Whether an error has been detected in recent output
+    has_error: bool,
+    /// Timestamp when error was last detected (for auto-clear)
+    error_detected_at: Option<std::time::Instant>,
+    /// Scroll offset into scrollback (0 = live view, >0 = looking at history)
+    scroll_offset: usize,
 }
 
 impl Terminal {
@@ -96,11 +111,110 @@ impl Terminal {
             dirty: true,
             alt_cells: None,
             on_alt_screen: false,
+            vte_parser: vte::Parser::new(),
+            pending_initial_commands: Vec::new(),
+            last_output_time: None,
+            initial_commands_sent: false,
+            has_error: false,
+            error_detected_at: None,
+            scroll_offset: 0,
         }
+    }
+
+    /// Queue initial commands to be sent once the shell is idle
+    pub fn set_initial_commands(&mut self, commands: Vec<String>) {
+        self.pending_initial_commands = commands;
     }
 
     pub fn set_pty(&mut self, pty: Pty) {
         self.pty = Some(pty);
+    }
+
+    /// Resize the terminal buffer and notify the PTY
+    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        if new_cols == self.cols && new_rows == self.rows {
+            return;
+        }
+        if new_cols == 0 || new_rows == 0 {
+            return;
+        }
+
+        // When shrinking rows, preserve content around the cursor by pushing
+        // excess top lines into scrollback. This prevents the shell prompt
+        // from appearing to gain extra blank lines on resize.
+        if new_rows < self.rows && !self.on_alt_screen {
+            // How many rows we need to discard from the top
+            // Keep the cursor at the same visual position relative to the bottom,
+            // but don't push more than needed.
+            let cursor_bottom_distance = self.rows - 1 - self.cursor_row;
+            let new_cursor_row = if cursor_bottom_distance < new_rows {
+                new_rows - 1 - cursor_bottom_distance
+            } else {
+                0
+            };
+            let rows_to_push = if self.cursor_row >= new_cursor_row {
+                self.cursor_row - new_cursor_row
+            } else {
+                0
+            };
+
+            // Push top rows into scrollback
+            for i in 0..rows_to_push {
+                self.scrollback.push(self.cells[i].clone());
+            }
+            if self.scrollback.len() > self.max_scrollback {
+                let excess = self.scrollback.len() - self.max_scrollback;
+                self.scrollback.drain(0..excess);
+            }
+
+            // Shift cells up
+            if rows_to_push > 0 {
+                self.cells.drain(0..rows_to_push);
+            }
+            self.cursor_row = new_cursor_row;
+        } else if new_rows > self.rows {
+            // Growing: cursor row stays the same, new empty rows added at bottom
+        }
+
+        // Build new buffer
+        let mut new_cells = vec![vec![Cell::default(); new_cols]; new_rows];
+        for row in 0..new_rows.min(self.cells.len()) {
+            for col in 0..new_cols.min(self.cells[row].len()) {
+                new_cells[row][col] = self.cells[row][col].clone();
+            }
+        }
+        self.cells = new_cells;
+
+        // Also resize alt screen buffer if present
+        if let Some(ref mut alt) = self.alt_cells {
+            let mut new_alt = vec![vec![Cell::default(); new_cols]; new_rows];
+            for row in 0..new_rows.min(alt.len()) {
+                for col in 0..new_cols.min(if alt.is_empty() { 0 } else { alt[0].len() }) {
+                    new_alt[row][col] = alt[row][col].clone();
+                }
+            }
+            *alt = new_alt;
+        }
+
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.cursor_row = self.cursor_row.min(new_rows - 1);
+        self.cursor_col = self.cursor_col.min(new_cols - 1);
+        self.scroll_top = 0;
+        self.scroll_bottom = new_rows - 1;
+
+        // Clamp saved cursor to new dimensions
+        if let Some((ref mut row, ref mut col)) = self.saved_cursor {
+            *row = (*row).min(new_rows - 1);
+            *col = (*col).min(new_cols - 1);
+        }
+
+        // Notify PTY of new size
+        if let Some(pty) = &self.pty {
+            pty.resize(new_cols as u16, new_rows as u16);
+        }
+
+        self.dirty = true;
     }
 
     pub fn title(&self) -> &str {
@@ -130,6 +244,87 @@ impl Terminal {
         text
     }
 
+    /// Scroll the view up into scrollback history by `n` lines
+    pub fn scroll_view_up(&mut self, n: usize) {
+        if self.on_alt_screen {
+            return; // No scrollback on alt screen
+        }
+        let max = self.scrollback.len();
+        self.scroll_offset = (self.scroll_offset + n).min(max);
+        self.dirty = true;
+    }
+
+    /// Scroll the view down (toward live) by `n` lines
+    pub fn scroll_view_down(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+        self.dirty = true;
+    }
+
+    /// Reset scroll to live view
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.dirty = true;
+    }
+
+    /// Current scroll offset (0 = live view)
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Return lines to display, mixing scrollback and visible cells based on scroll_offset.
+    /// When scroll_offset > 0, we show older content from scrollback at the top.
+    pub fn scrolled_lines(&self) -> Vec<Vec<Cell>> {
+        if self.scroll_offset == 0 || self.on_alt_screen {
+            return self.cells.clone();
+        }
+
+        let sb_len = self.scrollback.len();
+        let offset = self.scroll_offset.min(sb_len);
+
+        // We want to show `self.rows` lines total.
+        // The "virtual" buffer is: scrollback ++ cells
+        // Live bottom is at index (sb_len + self.rows - 1)
+        // We want to show rows ending at (sb_len + self.rows - 1 - offset)
+        // i.e., starting at (sb_len + self.rows - offset - self.rows) = (sb_len - offset)
+        let virtual_start = sb_len.saturating_sub(offset);
+
+        let mut result = Vec::with_capacity(self.rows);
+        for i in 0..self.rows {
+            let vi = virtual_start + i;
+            if vi < sb_len {
+                // From scrollback
+                result.push(self.scrollback[vi].clone());
+            } else {
+                // From visible cells
+                let cell_idx = vi - sb_len;
+                if cell_idx < self.cells.len() {
+                    result.push(self.cells[cell_idx].clone());
+                } else {
+                    result.push(vec![Cell::default(); self.cols]);
+                }
+            }
+        }
+
+        // Pad or trim columns to match current terminal width
+        for row in &mut result {
+            row.resize(self.cols, Cell::default());
+        }
+
+        result
+    }
+
+    pub fn has_error(&self) -> bool {
+        self.has_error
+    }
+
+    /// Check if the PTY child process has exited
+    pub fn is_exited(&self) -> bool {
+        match &self.pty {
+            Some(pty) => !pty.is_alive(),
+            None => true,
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -140,19 +335,54 @@ impl Terminal {
 
     /// Write data from PTY output into the terminal
     pub fn process_output(&mut self, data: &[u8]) {
-        // Use VTE parser for escape sequence handling
-        let mut parser = VteParser {
-            terminal: self,
-        };
-        let mut statemachine = vte::Parser::new();
-        for byte in data {
-            statemachine.advance(&mut parser, *byte);
+        // Split self to satisfy borrow checker: we need &mut self for VteParser
+        // performer callbacks, but also &mut self.vte_parser for advance().
+        // Take the parser out temporarily.
+        let mut statemachine = std::mem::replace(&mut self.vte_parser, vte::Parser::new());
+        {
+            let mut performer = VteParser { terminal: self };
+            for byte in data {
+                statemachine.advance(&mut performer, *byte);
+            }
         }
+        self.vte_parser = statemachine;
         self.dirty = true;
+    }
+
+    /// Detect error patterns in PTY output
+    fn detect_errors(&mut self, data: &[u8]) {
+        // Auto-clear error after 10 seconds of no new errors
+        if let Some(detected_at) = self.error_detected_at {
+            if detected_at.elapsed().as_secs() >= 10 {
+                self.has_error = false;
+                self.error_detected_at = None;
+            }
+        }
+
+        if let Ok(text) = std::str::from_utf8(data) {
+            let lower = text.to_lowercase();
+            let error_patterns = [
+                "error:", "error[", "fatal:", "panic:", "traceback",
+                "exception:", "failed:", "segfault", "command not found",
+                "no such file", "permission denied", "errno",
+            ];
+            for pattern in &error_patterns {
+                if lower.contains(pattern) {
+                    self.has_error = true;
+                    self.error_detected_at = Some(std::time::Instant::now());
+                    break;
+                }
+            }
+        }
     }
 
     /// Write user input to the PTY
     pub fn write_input(&mut self, data: &[u8]) {
+        // Snap to live view when user types
+        if self.scroll_offset > 0 {
+            self.scroll_offset = 0;
+            self.dirty = true;
+        }
         if let Some(pty) = &mut self.pty {
             let _ = pty.write(data);
         }
@@ -171,6 +401,22 @@ impl Terminal {
     pub fn poll(&mut self) {
         if let Some(data) = self.read_output() {
             self.process_output(&data);
+            self.last_output_time = Some(std::time::Instant::now());
+        }
+
+        // Send initial commands after the shell has been idle for 500ms.
+        // This ensures zsh/bash init (.zshrc, etc.) has finished.
+        if !self.initial_commands_sent && !self.pending_initial_commands.is_empty() {
+            if let Some(last) = self.last_output_time {
+                if last.elapsed().as_millis() >= 500 {
+                    self.initial_commands_sent = true;
+                    let commands = std::mem::take(&mut self.pending_initial_commands);
+                    for cmd in commands {
+                        let input = format!("{}\r", cmd);
+                        self.write_input(input.as_bytes());
+                    }
+                }
+            }
         }
     }
 
@@ -286,7 +532,17 @@ impl Terminal {
 
     fn exit_alt_screen(&mut self) {
         if self.on_alt_screen {
-            if let Some(cells) = self.alt_cells.take() {
+            if let Some(mut cells) = self.alt_cells.take() {
+                // Ensure restored buffer matches current dimensions (may have resized)
+                if cells.len() != self.rows || cells.first().map_or(true, |r| r.len() != self.cols) {
+                    let mut resized = vec![vec![Cell::default(); self.cols]; self.rows];
+                    for row in 0..self.rows.min(cells.len()) {
+                        for col in 0..self.cols.min(cells[row].len()) {
+                            resized[row][col] = cells[row][col].clone();
+                        }
+                    }
+                    cells = resized;
+                }
                 self.cells = cells;
             }
             self.on_alt_screen = false;
@@ -503,8 +759,8 @@ impl<'a> vte::Perform for VteParser<'a> {
                             1049 => {
                                 self.terminal.exit_alt_screen();
                                 if let Some((row, col)) = self.terminal.saved_cursor {
-                                    self.terminal.cursor_row = row;
-                                    self.terminal.cursor_col = col;
+                                    self.terminal.cursor_row = row.min(self.terminal.rows.saturating_sub(1));
+                                    self.terminal.cursor_col = col.min(self.terminal.cols.saturating_sub(1));
                                 }
                             }
                             1047 | 47 => {
@@ -527,8 +783,8 @@ impl<'a> vte::Perform for VteParser<'a> {
             // Restore cursor position
             'u' => {
                 if let Some((row, col)) = self.terminal.saved_cursor {
-                    self.terminal.cursor_row = row;
-                    self.terminal.cursor_col = col;
+                    self.terminal.cursor_row = row.min(self.terminal.rows.saturating_sub(1));
+                    self.terminal.cursor_col = col.min(self.terminal.cols.saturating_sub(1));
                 }
             }
             // CHA - Cursor Horizontal Absolute
@@ -598,8 +854,8 @@ impl<'a> vte::Perform for VteParser<'a> {
             // DECRC - Restore cursor
             b'8' => {
                 if let Some((row, col)) = self.terminal.saved_cursor {
-                    self.terminal.cursor_row = row;
-                    self.terminal.cursor_col = col;
+                    self.terminal.cursor_row = row.min(self.terminal.rows.saturating_sub(1));
+                    self.terminal.cursor_col = col.min(self.terminal.cols.saturating_sub(1));
                 }
             }
             // RIS - Full reset
@@ -725,11 +981,11 @@ pub struct TerminalManager {
 }
 
 impl TerminalManager {
-    pub fn new(count: usize, config: &Config) -> Self {
+    pub fn new(count: usize, panes: &[PaneConfig], _config: &Config) -> Self {
         let mut terminals = Vec::new();
         for i in 0..count {
-            let title = if i < config.panes.len() {
-                config.panes[i]
+            let title = if i < panes.len() {
+                panes[i]
                     .title
                     .clone()
                     .unwrap_or_else(|| format!("Pane {}", i + 1))
@@ -742,16 +998,21 @@ impl TerminalManager {
             let mut term = Terminal::new(cols, rows, &title);
 
             // Spawn PTY
-            let shell = if i < config.panes.len() {
-                config.panes[i].command.clone()
+            let shell = if i < panes.len() {
+                panes[i].command.clone()
             } else {
                 None
             };
-            let cwd = if i < config.panes.len() {
-                config.panes[i].cwd.clone()
+            let cwd = if i < panes.len() {
+                panes[i].cwd.as_deref().map(crate::config::expand_tilde)
             } else {
                 None
             };
+
+            // Queue initial commands (will be sent after shell produces first output)
+            if let Some(cmds) = panes.get(i).and_then(|p| p.initial_commands.as_ref()) {
+                term.set_initial_commands(cmds.clone());
+            }
 
             match Pty::spawn(cols as u16, rows as u16, shell.as_deref(), cwd.as_deref()) {
                 Ok(pty) => {
@@ -783,6 +1044,10 @@ impl TerminalManager {
         }
     }
 
+    pub fn any_dirty(&self) -> bool {
+        self.terminals.iter().any(|t| t.lock().unwrap().is_dirty())
+    }
+
     pub fn write_to_pane(&self, index: usize, data: &[u8]) {
         if index < self.terminals.len() {
             let mut t = self.terminals[index].lock().unwrap();
@@ -812,6 +1077,13 @@ impl TerminalManager {
             Err(e) => log::error!("Failed to spawn PTY: {}", e),
         }
         self.terminals.push(Arc::new(Mutex::new(term)));
+    }
+
+    pub fn resize_pane(&self, index: usize, cols: usize, rows: usize) {
+        if index < self.terminals.len() {
+            let mut t = self.terminals[index].lock().unwrap();
+            t.resize(cols, rows);
+        }
     }
 
     pub fn close_pane(&mut self, index: usize) {

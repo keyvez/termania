@@ -1,0 +1,57 @@
+# Termania Session Configuration
+# Place per-project: ./termania.toml
+# Or global default: ~/.config/termania/termania.toml
+#
+# Lookup order:
+#   1. ./termania.toml (current working directory)
+#   2. ~/.config/termania/termania.toml
+#   3. Falls back to [[panes]] in config.toml
+
+title = "Gemini Grid"
+rows = 3
+cols = 3
+
+[[panes]]
+title = "Gemini 1"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 2"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 3"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 4"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 5"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 6"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 7"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 8"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]
+
+[[panes]]
+title = "Gemini 9"
+cwd = "~/Documents/Code/termania_example"
+initial_commands = ["gemini"]

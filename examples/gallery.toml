@@ -1,0 +1,74 @@
+# Termania Plugin Gallery
+#
+# Showcases every pane plugin type in a single session.
+# Run with:  termania examples/gallery.toml
+
+title = "Plugin Gallery"
+rows = 2
+cols = 3
+
+# ── Terminal ────────────────────────────────────────────────
+# Classic terminal pane with a shell, watermark, and startup commands.
+
+[[panes]]
+type = "terminal"
+title = "Shell"
+watermark = "DEV"
+cwd = "~"
+initial_commands = ["echo 'Welcome to Termania!'", "echo ''", "echo 'This is a terminal pane with full shell access.'"]
+
+# ── Terminal (build watcher) ────────────────────────────────
+# A second terminal running in a project directory.
+
+[[panes]]
+type = "terminal"
+title = "Build"
+cwd = "~"
+watermark = "BUILD"
+initial_commands = ["echo 'Build pane ready.'", "echo 'Try: cargo build, npm run dev, etc.'"]
+
+# ── WebView ─────────────────────────────────────────────────
+# An interactive browser embedded in a pane.
+# Click inside to use — keyboard input is handled natively by WKWebView.
+
+[[panes]]
+type = "webview"
+title = "Docs"
+url = "https://docs.rs"
+
+# ── Notes ───────────────────────────────────────────────────
+# Editable text area. Content is auto-saved to `file` on close.
+# Omit `file` for a scratch pad that only lives in memory.
+
+[[panes]]
+type = "notes"
+title = "Scratch"
+content = """
+# Scratch Pad
+
+Type anything here. This is a live editable text area.
+
+- Supports plain text editing
+- Click to focus and start typing
+- Content lives in memory (not saved to disk)
+
+Try it out!
+"""
+
+# ── Notes (persistent) ─────────────────────────────────────
+# Same as above, but backed by a file on disk.
+
+[[panes]]
+type = "notes"
+title = "TODO"
+file = "~/termania-todo.md"
+
+# ── Terminal (third) ──────────────────────────────────────
+# Another terminal pane.
+
+[[panes]]
+type = "terminal"
+title = "Logs"
+cwd = "~"
+watermark = "LOGS"
+initial_commands = ["echo 'Log viewer ready.'", "echo 'Try: tail -f /var/log/system.log'"]
