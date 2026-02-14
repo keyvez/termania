@@ -1,6 +1,12 @@
-/target
-Cargo.lock
+# Zig
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Editor
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
