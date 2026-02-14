@@ -1,0 +1,12 @@
+.{
+    .fingerprint = 0xfca7cb1b82909a70,
+    .name = .termania,
+    .version = "0.2.0",
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{},
+}
