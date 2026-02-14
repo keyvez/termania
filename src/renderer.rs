@@ -1141,7 +1141,8 @@ impl Renderer {
 
         // -- Fixed header: title --
         let header_y = pad;
-        let title = "Termania Keyboard Shortcuts";
+        let version_title = format!("Termania v{} - Keyboard Shortcuts", env!("CARGO_PKG_VERSION"));
+        let title = &version_title;
         let title_color = [0.9, 0.9, 1.0, 1.0];
         for (ci, ch) in title.chars().enumerate() {
             let glyph = self.rasterize_glyph_at_size(ch, help_font_size);

@@ -730,7 +730,7 @@ impl ApplicationHandler for App {
         // Start the text tap server
         self.text_tap.start();
 
-        info!("Termania started");
+        info!("Termania v{} started", VERSION);
     }
 
     fn window_event(
@@ -1097,7 +1097,15 @@ fn key_event_to_bytes(event: &KeyEvent, is_ctrl: bool, _is_shift: bool) -> Vec<u
     }
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn print_version() {
+    println!("termania {}", VERSION);
+}
+
 fn print_usage() {
+    eprintln!("termania {}", VERSION);
+    eprintln!();
     eprintln!("Usage: termania [OPTIONS] [SESSION_FILE]");
     eprintln!();
     eprintln!("Arguments:");
@@ -1105,6 +1113,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -h, --help        Print this help message");
+    eprintln!("  -v, --version     Print version");
     eprintln!();
     eprintln!("If no session file is given, Termania looks for:");
     eprintln!("  1. ./termania.toml");
@@ -1128,6 +1137,10 @@ fn main() {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_usage();
+                std::process::exit(0);
+            }
+            "-v" | "--version" => {
+                print_version();
                 std::process::exit(0);
             }
             _ if arg.starts_with('-') => {

@@ -75,6 +75,8 @@ impl PanePlugin for TerminalPlugin {
     fn resize(&mut self, width_px: f32, height_px: f32, cell_w: f32, cell_h: f32) {
         let cols = (width_px / cell_w).floor().max(1.0) as usize;
         let rows = (height_px / cell_h).floor().max(1.0) as usize;
+        log::info!("terminal resize: width_px={:.1}, cell_w={:.1}, cols={}, height_px={:.1}, cell_h={:.1}, rows={}",
+            width_px, cell_w, cols, height_px, cell_h, rows);
         self.terminal.resize(cols, rows);
     }
 
