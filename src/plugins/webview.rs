@@ -87,6 +87,28 @@ impl WebViewPlugin {
         }
     }
 
+    /// Navigate the existing WKWebView to a new URL
+    pub fn navigate_to(&mut self, url: &str) {
+        self.url = url.to_string();
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ptr) = self.ns_view {
+                unsafe {
+                    use objc2_foundation::{NSString, NSURL, NSURLRequest};
+                    use objc2_web_kit::WKWebView;
+
+                    let webview = &*(ptr as *const WKWebView);
+                    let url_string = NSString::from_str(url);
+                    if let Some(url_obj) = NSURL::URLWithString(&url_string) {
+                        let request = NSURLRequest::requestWithURL(&url_obj);
+                        webview.loadRequest(&request);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Remove the webview from its superview
     pub fn remove_webview(&mut self) {
         #[cfg(target_os = "macos")]
@@ -200,6 +222,11 @@ impl PanePlugin for WebViewPlugin {
                 }
             }
         }
+    }
+
+    fn navigate(&mut self, url: &str) -> bool {
+        self.navigate_to(url);
+        true
     }
 
     fn set_native_view_focused(&mut self, focused: bool) {

@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use crate::llm::TermaniaAction;
+
 /// Text Tap Server - allows external processes to subscribe to terminal output
 /// and send commands to panes.
 ///
@@ -16,12 +18,13 @@ use std::time::Instant;
 ///     {"read": <pane_index>}          Read current screen content once
 ///     {"send": <pane_index>, "input": "<text>"}  Send input to a pane
 ///     {"send": "all", "input": "<text>"}         Send input to all panes
+///     {"action": {<TermaniaAction>}}             Execute a TermaniaAction
 ///
 ///   Server -> Client:
 ///     {"pane": <index>, "content": "<text>"}  Screen content update
 ///     {"panes": <count>}                       Response to list
 ///     {"screen": "<text>"}                     Response to read
-///     {"ok": true}                             Ack for send
+///     {"ok": true}                             Ack for send/action
 pub struct TextTapServer {
     socket_path: String,
     clients: Arc<Mutex<Vec<TapClient>>>,
@@ -40,10 +43,15 @@ struct TapClient {
     id: u64,
 }
 
-/// Command from a tap client to send input to pane(s)
-pub struct TapCommand {
-    pub target: TapTarget,
-    pub input: String,
+/// Command from a tap client — either a legacy send or a full TermaniaAction
+pub enum TapCommand {
+    /// Legacy: send raw input to a target
+    Send {
+        target: TapTarget,
+        input: String,
+    },
+    /// Full TermaniaAction (from {"action": {...}} protocol)
+    Action(TermaniaAction),
 }
 
 #[derive(Clone)]
@@ -218,7 +226,23 @@ impl TextTapServer {
         pane_count: &Arc<Mutex<usize>>,
         response_stream: &mut UnixStream,
     ) {
-        // Parse commands with simple pattern matching
+        // Try to parse as JSON for the "action" command first
+        if line.contains("\"action\"") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(action_val) = json.get("action") {
+                    if let Ok(action) = serde_json::from_value::<TermaniaAction>(action_val.clone()) {
+                        pending_commands.lock().unwrap().push(TapCommand::Action(action));
+                        let _ = response_stream.write_all(b"{\"ok\":true}\n");
+                        return;
+                    } else {
+                        let _ = response_stream.write_all(b"{\"error\":\"invalid action format\"}\n");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Legacy command parsing
         if line.contains("\"list\"") {
             let count = *pane_count.lock().unwrap();
             let response = format!("{{\"panes\":{}}}\n", count);
@@ -252,7 +276,7 @@ impl TextTapServer {
                     return;
                 };
 
-                pending_commands.lock().unwrap().push(TapCommand {
+                pending_commands.lock().unwrap().push(TapCommand::Send {
                     target,
                     input,
                 });

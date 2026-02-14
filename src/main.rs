@@ -2,6 +2,7 @@
 
 mod config;
 mod grid;
+mod llm;
 mod plugin;
 mod plugins;
 mod pty;
@@ -20,13 +21,35 @@ use plugins::webview::WebViewPlugin;
 use plugins::notes::NotesPlugin;
 use plugins::screen_capture::ScreenCapturePlugin;
 
+/// Overlay mode: LLM-assisted or raw command
+#[derive(Debug, Clone, PartialEq)]
+enum OverlayMode {
+    Llm,
+    RawCommand,
+    TokenInput,
+}
+
 /// Command overlay for sending commands to selected/all panes
 struct CommandOverlay {
     /// The text being typed
     input: String,
     /// Target panes (None = all, Some = specific set)
     targets: Option<HashSet<usize>>,
+    /// Current mode (LLM or raw command)
+    mode: OverlayMode,
+    /// Whether the LLM is currently processing
+    llm_thinking: bool,
+    /// LLM response ready for review/execution
+    llm_response: Option<llm::LlmResponse>,
 }
+/// Text selection within a terminal pane
+struct TextSelection {
+    pane_idx: usize,
+    start: (usize, usize), // (row, col) in displayed lines
+    end: (usize, usize),
+    in_progress: bool,
+}
+
 use grid::GridManager;
 use log::info;
 use renderer::Renderer;
@@ -60,6 +83,14 @@ struct TermaniaWindow {
     session: Option<SessionConfig>,
     /// Accumulated trackpad scroll delta (pixels) for smooth scrolling
     scroll_accumulator: f64,
+    /// Parent NSView pointer for initializing native views at runtime
+    parent_ns_view: Option<*mut std::ffi::c_void>,
+    /// Current text selection (if any)
+    text_selection: Option<TextSelection>,
+    /// Timestamp of last left click (for double-click detection)
+    last_click_time: Option<Instant>,
+    /// Position of last left click (for double-click detection)
+    last_click_pos: Option<(f64, f64)>,
 }
 
 struct App {
@@ -76,6 +107,8 @@ struct App {
     last_option_press: Option<Instant>,
     /// Whether the initial window has been created
     initial_window_created: bool,
+    /// LLM client for AI-assisted commands (None if no API key)
+    llm_client: Option<llm::LlmClient>,
 }
 
 /// Create a pane plugin from a pane config entry
@@ -168,6 +201,87 @@ impl TermaniaWindow {
         }
     }
 
+    /// Convert pixel coordinates to (pane_idx, row, col) in the terminal grid.
+    /// Returns None if the position is outside any terminal pane's content area.
+    fn pixel_to_cell(&self, px: f64, py: f64, config: &Config) -> Option<(usize, usize, usize)> {
+        let scale = self.renderer.scale_factor();
+        let grid_layout = self.grid.compute_layout(
+            self.renderer.width(),
+            self.renderer.height(),
+            config,
+            scale,
+        );
+        let x = px as f32;
+        let y = py as f32;
+        let border_width = 2.0f32 * scale;
+        let inner_pad = config.grid.inner_padding as f32 * scale;
+        let cell_w = self.renderer.cell_width();
+        let cell_h = self.renderer.cell_height();
+        let title_height = config.grid.title_bar_height as f32 * scale;
+
+        for (i, layout) in grid_layout.iter().enumerate() {
+            if i >= self.panes.len() { break; }
+            // Skip native-view panes
+            if self.panes[i].is_native_view() { continue; }
+
+            let content_x = layout.x + border_width + inner_pad;
+            let content_y = layout.y + border_width + title_height + inner_pad;
+            let content_w = layout.width - 2.0 * border_width - 2.0 * inner_pad;
+            let content_h = layout.height - 2.0 * border_width - title_height - 2.0 * inner_pad;
+
+            if x >= content_x && x < content_x + content_w
+                && y >= content_y && y < content_y + content_h
+            {
+                let col = ((x - content_x) / cell_w) as usize;
+                let row = ((y - content_y) / cell_h) as usize;
+                return Some((i, row, col));
+            }
+        }
+        None
+    }
+
+    /// Extract the selected text from the terminal pane
+    fn selected_text(&self) -> Option<String> {
+        let sel = self.text_selection.as_ref()?;
+        let pane = self.panes.get(sel.pane_idx)?;
+        let render_data = pane.render_data();
+        if let crate::plugin::PanePluginRenderData::Terminal { ref lines, .. } = render_data {
+            let (sr, sc, er, ec) = Self::normalized_selection(sel);
+            let mut result = String::new();
+            for row in sr..=er {
+                if row >= lines.len() { break; }
+                let line = &lines[row];
+                let col_start = if row == sr { sc } else { 0 };
+                let col_end = if row == er { ec.min(line.len().saturating_sub(1)) } else { line.len().saturating_sub(1) };
+                if col_start > col_end || col_start >= line.len() { continue; }
+                let mut row_text = String::new();
+                for col in col_start..=col_end {
+                    if col < line.len() {
+                        row_text.push(line[col].ch);
+                    }
+                }
+                // Trim trailing spaces per line
+                let trimmed = row_text.trim_end();
+                result.push_str(trimmed);
+                if row < er {
+                    result.push('\n');
+                }
+            }
+            if result.is_empty() { None } else { Some(result) }
+        } else {
+            None
+        }
+    }
+
+    /// Normalize selection so start <= end in reading order
+    fn normalized_selection(sel: &TextSelection) -> (usize, usize, usize, usize) {
+        if sel.start.0 < sel.end.0 || (sel.start.0 == sel.end.0 && sel.start.1 <= sel.end.1) {
+            (sel.start.0, sel.start.1, sel.end.0, sel.end.1)
+        } else {
+            (sel.end.0, sel.end.1, sel.start.0, sel.start.1)
+        }
+    }
+
     /// Find which pane index the given screen coordinates fall in
     fn pane_at_position(&self, x: f64, y: f64, config: &Config) -> Option<usize> {
         let scale = self.renderer.scale_factor();
@@ -234,12 +348,273 @@ impl TermaniaWindow {
         self.sync_pane_sizes(config);
         self.window.request_redraw();
     }
+
+    /// Execute a TermaniaAction and return the result
+    fn execute_action(&mut self, action: &llm::TermaniaAction, config: &Config) -> llm::ActionResult {
+        match action {
+            llm::TermaniaAction::SendCommand { pane, command } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range (have {})", pane, self.panes.len()),
+                    };
+                }
+                let cmd = format!("{}\r", command);
+                self.panes[*pane].write_input(cmd.as_bytes());
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SendToAll { command } => {
+                let cmd = format!("{}\r", command);
+                for pane in &mut self.panes {
+                    pane.write_input(cmd.as_bytes());
+                }
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SetTitle { pane, title } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                self.panes[*pane].set_title(title.clone());
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SetWatermark { pane, watermark } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                // Ensure effective_panes_config has enough entries
+                while self.effective_panes_config.len() <= *pane {
+                    self.effective_panes_config.push(PaneConfig {
+                        pane_type: "terminal".to_string(),
+                        title: None, command: None, cwd: None, env: None,
+                        initial_commands: None, watermark: None, url: None,
+                        file: None, content: None, target: None, target_title: None,
+                    });
+                }
+                self.effective_panes_config[*pane].watermark = Some(watermark.clone());
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::ClearWatermark { pane } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                if *pane < self.effective_panes_config.len() {
+                    self.effective_panes_config[*pane].watermark = None;
+                }
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::Navigate { pane, url } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                if !self.panes[*pane].navigate(url) {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} does not support navigation (not a webview)", pane),
+                    };
+                }
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SetContent { pane, content } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                if !self.panes[*pane].set_content(content) {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} does not support set_content (not a notes pane)", pane),
+                    };
+                }
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SpawnPane {
+                pane_type, title, command, cwd, url, content, watermark, row,
+            } => {
+                let pane_config = PaneConfig {
+                    pane_type: pane_type.clone(),
+                    title: title.clone(),
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    env: None,
+                    initial_commands: None,
+                    watermark: watermark.clone(),
+                    url: url.clone(),
+                    file: None,
+                    content: content.clone(),
+                    target: None,
+                    target_title: None,
+                };
+                let idx = self.panes.len();
+                let mut new_pane = create_pane_plugin(idx, Some(&pane_config), config);
+                new_pane.init();
+
+                // Initialize native view if needed
+                if new_pane.is_native_view() {
+                    if let Some(parent) = self.parent_ns_view {
+                        new_pane.init_native_view_with_parent(parent);
+                    }
+                }
+
+                if let Some(target_row) = row {
+                    // Insert into an existing row
+                    if *target_row < self.grid.rows() {
+                        let insert_at = self.grid.flat_index(*target_row, self.grid.cols_in_row(*target_row).saturating_sub(1))
+                            .map(|i| i + 1)
+                            .unwrap_or(self.panes.len());
+                        self.panes.insert(insert_at, new_pane);
+                        // Keep effective_panes_config in sync
+                        if insert_at <= self.effective_panes_config.len() {
+                            self.effective_panes_config.insert(insert_at, pane_config);
+                        } else {
+                            self.effective_panes_config.push(pane_config);
+                        }
+                        self.grid.add_col_to_row(*target_row);
+                    } else {
+                        // Row out of range, add a new row
+                        self.panes.push(new_pane);
+                        self.effective_panes_config.push(pane_config);
+                        self.grid.add_row();
+                    }
+                } else {
+                    // Add a new row
+                    self.panes.push(new_pane);
+                    self.effective_panes_config.push(pane_config);
+                    self.grid.add_row();
+                }
+
+                self.sync_pane_sizes(config);
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::ClosePane { pane } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                if self.panes.len() <= 1 {
+                    return llm::ActionResult::Error {
+                        message: "Cannot close the last pane".to_string(),
+                    };
+                }
+                let row = self.grid.pane_position(*pane)
+                    .map(|(r, _)| r)
+                    .unwrap_or(0);
+                self.panes[*pane].shutdown();
+                self.panes.remove(*pane);
+                if *pane < self.effective_panes_config.len() {
+                    self.effective_panes_config.remove(*pane);
+                }
+                self.grid.remove_col_from_row(row);
+                if self.focused_pane >= self.panes.len() && self.focused_pane > 0 {
+                    self.focused_pane -= 1;
+                }
+                self.sync_pane_sizes(config);
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::ReplacePane {
+                pane, pane_type, title, command, cwd, url, content, watermark,
+            } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                // Shutdown old pane
+                self.panes[*pane].shutdown();
+
+                // Create new pane
+                let pane_config = PaneConfig {
+                    pane_type: pane_type.clone(),
+                    title: title.clone(),
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    env: None,
+                    initial_commands: None,
+                    watermark: watermark.clone(),
+                    url: url.clone(),
+                    file: None,
+                    content: content.clone(),
+                    target: None,
+                    target_title: None,
+                };
+                let mut new_pane = create_pane_plugin(*pane, Some(&pane_config), config);
+                new_pane.init();
+
+                // Initialize native view if needed
+                if new_pane.is_native_view() {
+                    if let Some(parent) = self.parent_ns_view {
+                        new_pane.init_native_view_with_parent(parent);
+                    }
+                }
+
+                self.panes[*pane] = new_pane;
+
+                // Update effective config
+                while self.effective_panes_config.len() <= *pane {
+                    self.effective_panes_config.push(PaneConfig {
+                        pane_type: "terminal".to_string(),
+                        title: None, command: None, cwd: None, env: None,
+                        initial_commands: None, watermark: None, url: None,
+                        file: None, content: None, target: None, target_title: None,
+                    });
+                }
+                self.effective_panes_config[*pane] = pane_config;
+
+                self.sync_pane_sizes(config);
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::SwapPanes { a, b } => {
+                if *a >= self.panes.len() || *b >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane index out of range (a={}, b={}, have {})", a, b, self.panes.len()),
+                    };
+                }
+                self.panes.swap(*a, *b);
+                // Keep effective_panes_config in sync
+                let max_idx = (*a).max(*b);
+                while self.effective_panes_config.len() <= max_idx {
+                    self.effective_panes_config.push(PaneConfig {
+                        pane_type: "terminal".to_string(),
+                        title: None, command: None, cwd: None, env: None,
+                        initial_commands: None, watermark: None, url: None,
+                        file: None, content: None, target: None, target_title: None,
+                    });
+                }
+                self.effective_panes_config.swap(*a, *b);
+                self.sync_pane_sizes(config);
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::FocusPane { pane } => {
+                if *pane >= self.panes.len() {
+                    return llm::ActionResult::Error {
+                        message: format!("Pane {} out of range", pane),
+                    };
+                }
+                self.focused_pane = *pane;
+                llm::ActionResult::Ok
+            }
+            llm::TermaniaAction::Message { .. } => {
+                // Messages are display-only, no side effect
+                llm::ActionResult::Ok
+            }
+        }
+    }
 }
 
 impl App {
     fn new(config: Config, session: Option<SessionConfig>) -> Self {
         let config = Arc::new(config);
         let text_tap = TextTapServer::new(&config.text_tap.socket_path);
+        let llm_client = llm::LlmClient::new(&config.llm);
+        if llm_client.is_some() {
+            log::info!("LLM client initialized (provider: {})", config.llm.provider);
+        }
 
         Self {
             config,
@@ -249,6 +624,7 @@ impl App {
             modifiers: ModifiersState::empty(),
             last_option_press: None,
             initial_window_created: false,
+            llm_client,
         }
     }
 
@@ -324,15 +700,20 @@ impl App {
             effective_panes_config,
             session,
             scroll_accumulator: 0.0,
+            parent_ns_view: None,
+            text_selection: None,
+            last_click_time: None,
+            last_click_pos: None,
         };
 
-        // Initialize native views
+        // Initialize native views and store parent_ns_view for later use
         #[cfg(target_os = "macos")]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             if let Ok(handle) = window.window_handle() {
                 if let RawWindowHandle::AppKit(appkit_handle) = handle.as_raw() {
                     let ns_view = appkit_handle.ns_view.as_ptr() as *mut std::ffi::c_void;
+                    tw.parent_ns_view = Some(ns_view);
                     tw.init_native_views(ns_view);
                 }
             }
@@ -376,6 +757,13 @@ impl App {
             None => return,
         };
 
+        // Escape clears text selection first
+        if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) && tw.text_selection.is_some() {
+            tw.text_selection = None;
+            tw.window.request_redraw();
+            return;
+        }
+
         // Help overlay: Escape to dismiss, arrows/page keys to scroll
         if tw.show_help {
             let scroll_down = matches!(&event.logical_key, Key::Named(NamedKey::ArrowDown))
@@ -406,6 +794,7 @@ impl App {
                 if last.elapsed().as_millis() < 400 {
                     // Double-tap detected — open command overlay
                     self.last_option_press = None;
+                    let has_llm = self.llm_client.is_some();
                     let tw = self.windows.get_mut(&window_id).unwrap();
                     if tw.command_overlay.is_none() {
                         let targets = if tw.selected_panes.is_empty() {
@@ -416,6 +805,9 @@ impl App {
                         tw.command_overlay = Some(CommandOverlay {
                             input: String::new(),
                             targets,
+                            mode: if has_llm { OverlayMode::Llm } else { OverlayMode::TokenInput },
+                            llm_thinking: false,
+                            llm_response: None,
                         });
                         tw.window.request_redraw();
                     }
@@ -469,36 +861,177 @@ impl App {
         }
 
         // Handle command overlay input
-        if let Some(ref mut overlay) = tw.command_overlay {
+        if tw.command_overlay.is_some() {
+            let overlay = tw.command_overlay.as_mut().unwrap();
+
+            // If LLM response is shown, Enter executes actions, Escape cancels
+            if overlay.llm_response.is_some() {
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        tw.command_overlay = None;
+                        return;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        let response = overlay.llm_response.take().unwrap();
+                        tw.command_overlay = None;
+                        // Execute all actions via the dispatch engine
+                        for action in &response.actions {
+                            let result = tw.execute_action(action, &self.config);
+                            if let llm::ActionResult::Error { message } = result {
+                                log::warn!("Action failed: {}", message);
+                            }
+                        }
+                        tw.window.request_redraw();
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+
+            // If LLM is thinking, only Escape works
+            if overlay.llm_thinking {
+                if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+                    tw.command_overlay = None;
+                }
+                return;
+            }
+
+            // Cmd+V: paste from clipboard into overlay input
+            if is_super && matches!(&event.logical_key, Key::Character(c) if c.as_str() == "v") {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                        // Strip newlines from pasted text
+                        let clean = text.replace('\n', "").replace('\r', "");
+                        overlay.input.push_str(&clean);
+                        // Update mode based on ! prefix
+                        if self.llm_client.is_some() {
+                            overlay.mode = if overlay.input.starts_with('!') {
+                                OverlayMode::RawCommand
+                            } else {
+                                OverlayMode::Llm
+                            };
+                        } else {
+                            overlay.mode = if overlay.input.starts_with('!') {
+                                OverlayMode::RawCommand
+                            } else {
+                                OverlayMode::TokenInput
+                            };
+                        }
+                    }
+                }
+                return;
+            }
+
             match &event.logical_key {
                 Key::Named(NamedKey::Escape) => {
                     tw.command_overlay = None;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    let cmd = format!("{}\r", overlay.input);
+                    let input = overlay.input.clone();
+                    let mode = overlay.mode.clone();
                     let targets = overlay.targets.clone();
-                    tw.command_overlay = None;
 
-                    if let Some(targets) = targets {
-                        for &i in &targets {
-                            if i < tw.panes.len() {
-                                tw.panes[i].write_input(cmd.as_bytes());
+                    match mode {
+                        OverlayMode::TokenInput => {
+                            // Set the OAuth token and initialize the LLM client
+                            let token = input.trim().to_string();
+                            if token.is_empty() {
+                                return;
+                            }
+                            std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", &token);
+                            llm::save_oauth_token(&token);
+                            let client = llm::LlmClient::new(&self.config.llm);
+                            if client.is_some() {
+                                log::info!("LLM client initialized via OAuth token from overlay");
+                                self.llm_client = client;
+                                // Switch overlay to AI mode
+                                let overlay = tw.command_overlay.as_mut().unwrap();
+                                overlay.input.clear();
+                                overlay.mode = OverlayMode::Llm;
+                            } else {
+                                // Token didn't work, stay in token input
+                                let overlay = tw.command_overlay.as_mut().unwrap();
+                                overlay.input.clear();
+                            }
+                            return;
+                        }
+                        OverlayMode::RawCommand => {
+                            // Raw mode: send directly (strip leading ! if present)
+                            let raw = if input.starts_with('!') { &input[1..] } else { &input };
+                            let cmd = format!("{}\r", raw);
+                            tw.command_overlay = None;
+
+                            if let Some(targets) = targets {
+                                for &i in &targets {
+                                    if i < tw.panes.len() {
+                                        tw.panes[i].write_input(cmd.as_bytes());
+                                    }
+                                }
+                            } else {
+                                for pane in &mut tw.panes {
+                                    pane.write_input(cmd.as_bytes());
+                                }
                             }
                         }
-                    } else {
-                        for pane in &mut tw.panes {
-                            pane.write_input(cmd.as_bytes());
+                        OverlayMode::Llm => {
+                            if input.is_empty() {
+                                return;
+                            }
+                            // Gather pane context and send to LLM
+                            let pane_contexts: Vec<llm::PaneContext> = tw.panes.iter().enumerate()
+                                .map(|(i, pane)| llm::PaneContext {
+                                    index: i,
+                                    pane_type: pane.pane_type_str().to_string(),
+                                    title: pane.title().to_string(),
+                                    visible_text: pane.visible_text(),
+                                })
+                                .collect();
+
+                            let custom_system = self.config.llm.system_prompt.as_deref();
+                            if let Some(ref client) = self.llm_client {
+                                client.send(&input, &pane_contexts, custom_system);
+                                let overlay = tw.command_overlay.as_mut().unwrap();
+                                overlay.llm_thinking = true;
+                            }
                         }
                     }
                     return;
                 }
                 Key::Named(NamedKey::Backspace) => {
                     overlay.input.pop();
+                    // Update mode based on ! prefix
+                    if self.llm_client.is_some() {
+                        overlay.mode = if overlay.input.starts_with('!') {
+                            OverlayMode::RawCommand
+                        } else {
+                            OverlayMode::Llm
+                        };
+                    } else {
+                        overlay.mode = if overlay.input.starts_with('!') {
+                            OverlayMode::RawCommand
+                        } else {
+                            OverlayMode::TokenInput
+                        };
+                    }
                     return;
                 }
                 Key::Character(c) => {
                     overlay.input.push_str(c.as_str());
+                    // Update mode based on ! prefix
+                    if self.llm_client.is_some() {
+                        overlay.mode = if overlay.input.starts_with('!') {
+                            OverlayMode::RawCommand
+                        } else {
+                            OverlayMode::Llm
+                        };
+                    } else {
+                        overlay.mode = if overlay.input.starts_with('!') {
+                            OverlayMode::RawCommand
+                        } else {
+                            OverlayMode::TokenInput
+                        };
+                    }
                     return;
                 }
                 Key::Named(NamedKey::Space) => {
@@ -512,6 +1045,43 @@ impl App {
         // Termania keybindings (Cmd+key on macOS)
         if is_super {
             match &event.logical_key {
+                // Cmd+C: copy selected text (or send Ctrl+C if no selection)
+                Key::Character(c) if c.as_str() == "c" && !is_shift => {
+                    if tw.text_selection.is_some() {
+                        if let Some(text) = tw.selected_text() {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                let _ = clipboard.set_text(text);
+                            }
+                        }
+                        tw.window.request_redraw();
+                        return;
+                    }
+                    // No selection: fall through to send Ctrl+C to terminal
+                }
+                // Cmd+V: paste from clipboard
+                Key::Character(c) if c.as_str() == "v" && !is_shift => {
+                    tw.text_selection = None;
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            tw.send_input(text.as_bytes());
+                        }
+                    }
+                    tw.window.request_redraw();
+                    return;
+                }
+                // Cmd+X: copy selected text then clear selection (can't really cut in terminal)
+                Key::Character(c) if c.as_str() == "x" && !is_shift => {
+                    if tw.text_selection.is_some() {
+                        if let Some(text) = tw.selected_text() {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                let _ = clipboard.set_text(text);
+                            }
+                        }
+                        tw.text_selection = None;
+                        tw.window.request_redraw();
+                        return;
+                    }
+                }
                 // Cmd+Shift+N: new window
                 Key::Character(c) if c.as_str() == "n" && is_shift => {
                     // Handled outside this function since we need &mut self + event_loop
@@ -548,9 +1118,13 @@ impl App {
                     tw.window.request_redraw();
                     return;
                 }
-                // Cmd+W: close focused pane
+                // Cmd+W: close focused pane (or close window if last pane — handled in window_event)
                 Key::Character(c) if c.as_str() == "w" => {
-                    if tw.panes.len() > 1 && tw.focused_pane < tw.panes.len() {
+                    if tw.panes.len() <= 1 {
+                        // Last pane: handled in window_event where event_loop is available
+                        return;
+                    }
+                    if tw.focused_pane < tw.panes.len() {
                         // Find which row this pane is in before removing
                         let row = tw.grid.pane_position(tw.focused_pane)
                             .map(|(r, _c)| r)
@@ -632,6 +1206,9 @@ impl App {
                     tw.command_overlay = Some(CommandOverlay {
                         input: String::new(),
                         targets,
+                        mode: if self.llm_client.is_some() { OverlayMode::Llm } else { OverlayMode::TokenInput },
+                        llm_thinking: false,
+                        llm_response: None,
                     });
                     tw.window.request_redraw();
                     return;
@@ -712,6 +1289,8 @@ impl App {
         // Forward input to focused terminal (or all if broadcast mode)
         let bytes = key_event_to_bytes(&event, is_ctrl, is_shift);
         if !bytes.is_empty() {
+            // Clear text selection when actual input is sent to the terminal
+            tw.text_selection = None;
             tw.send_input(&bytes);
         }
     }
@@ -766,16 +1345,34 @@ impl ApplicationHandler for App {
                 self.modifiers = mods.state();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                // Check for Cmd+Shift+N (new window) before dispatching to handle_key_input
-                // since creating a new window requires &mut self + event_loop
-                if event.state == ElementState::Pressed
-                    && self.modifiers.super_key()
-                    && self.modifiers.shift_key()
-                {
+                if event.state == ElementState::Pressed && self.modifiers.super_key() {
+                    // Cmd+Shift+N: new window (needs event_loop)
+                    if self.modifiers.shift_key() {
+                        if let Key::Character(ref c) = event.logical_key {
+                            if c.as_str() == "n" {
+                                self.create_new_default_window(event_loop);
+                                return;
+                            }
+                        }
+                    }
+                    // Cmd+W on last pane: close the window (needs event_loop)
                     if let Key::Character(ref c) = event.logical_key {
-                        if c.as_str() == "n" {
-                            self.create_new_default_window(event_loop);
-                            return;
+                        if c.as_str() == "w" {
+                            let is_last_pane = self.windows.get(&window_id)
+                                .map(|tw| tw.panes.len() <= 1)
+                                .unwrap_or(false);
+                            if is_last_pane {
+                                if let Some(mut tw) = self.windows.remove(&window_id) {
+                                    for pane in &mut tw.panes {
+                                        pane.shutdown();
+                                    }
+                                }
+                                if self.windows.is_empty() {
+                                    self.text_tap.stop();
+                                    event_loop.exit();
+                                }
+                                return;
+                            }
                         }
                     }
                 }
@@ -787,7 +1384,17 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(tw) = self.windows.get_mut(&window_id) {
                     tw.cursor_position = (position.x, position.y);
-                    // Update drag selection if in progress
+                    // Update text selection drag
+                    let sel_in_progress = tw.text_selection.as_ref().map(|s| s.in_progress).unwrap_or(false);
+                    if sel_in_progress {
+                        if let Some((_pi, row, col)) = tw.pixel_to_cell(position.x, position.y, &self.config) {
+                            if let Some(ref mut sel) = tw.text_selection {
+                                sel.end = (row, col);
+                            }
+                            tw.window.request_redraw();
+                        }
+                    }
+                    // Update pane drag selection if in progress
                     if tw.drag_selecting {
                         if let Some(start_pane) = tw.drag_start_pane {
                             if let Some(current_pane) = tw.pane_at_position(position.x, position.y, &self.config) {
@@ -824,25 +1431,125 @@ impl ApplicationHandler for App {
                             let (cx, cy) = tw.cursor_position;
                             if let Some(pane_idx) = tw.pane_at_position(cx, cy, &self.config) {
                                 if self.modifiers.shift_key() {
+                                    // Shift+click: pane drag selection (existing behavior)
                                     tw.drag_selecting = true;
                                     tw.drag_start_pane = Some(pane_idx);
                                     tw.selected_panes.clear();
                                     tw.selected_panes.insert(pane_idx);
-                                } else if self.modifiers.super_key() {
+                                } else if self.modifiers.super_key() && self.modifiers.control_key() {
+                                    // Cmd+Ctrl+Click: toggle pane selection (moved from Cmd+Click)
                                     if tw.selected_panes.contains(&pane_idx) {
                                         tw.selected_panes.remove(&pane_idx);
                                     } else {
                                         tw.selected_panes.insert(pane_idx);
                                     }
-                                } else {
+                                } else if self.modifiers.control_key() {
+                                    // Ctrl+Click: select non-space token within the same line
                                     tw.focused_pane = pane_idx;
                                     tw.selected_panes.clear();
+                                    if let Some((pi, row, col)) = tw.pixel_to_cell(cx, cy, &self.config) {
+                                        let render_data = tw.panes[pi].render_data();
+                                        if let crate::plugin::PanePluginRenderData::Terminal { ref lines, .. } = render_data {
+                                            if row < lines.len() {
+                                                let line = &lines[row];
+                                                let is_non_space = |c: char| c != ' ' && c != '\0';
+                                                if col < line.len() && is_non_space(line[col].ch) {
+                                                    // Scan left within this line
+                                                    let mut sc = col;
+                                                    while sc > 0 && sc - 1 < line.len() && is_non_space(line[sc - 1].ch) {
+                                                        sc -= 1;
+                                                    }
+                                                    // Scan right within this line
+                                                    let mut ec = col;
+                                                    while ec + 1 < line.len() && is_non_space(line[ec + 1].ch) {
+                                                        ec += 1;
+                                                    }
+                                                    tw.text_selection = Some(TextSelection {
+                                                        pane_idx: pi,
+                                                        start: (row, sc),
+                                                        end: (row, ec),
+                                                        in_progress: false,
+                                                    });
+                                                } else {
+                                                    tw.text_selection = None;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Plain click: focus pane + start text selection
+                                    tw.focused_pane = pane_idx;
+                                    tw.selected_panes.clear();
+
+                                    // Check for double-click → word select
+                                    let now = Instant::now();
+                                    let is_double_click = tw.last_click_time
+                                        .map(|t| now.duration_since(t).as_millis() < 400)
+                                        .unwrap_or(false)
+                                        && tw.last_click_pos
+                                            .map(|(lx, ly)| (cx - lx).abs() < 4.0 && (cy - ly).abs() < 4.0)
+                                            .unwrap_or(false);
+
+                                    if is_double_click {
+                                        // Double-click: word select
+                                        if let Some((pi, row, col)) = tw.pixel_to_cell(cx, cy, &self.config) {
+                                            let render_data = tw.panes[pi].render_data();
+                                            if let crate::plugin::PanePluginRenderData::Terminal { ref lines, .. } = render_data {
+                                                if row < lines.len() {
+                                                    let line = &lines[row];
+                                                    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                                                    if col < line.len() && is_word_char(line[col].ch) {
+                                                        let mut sc = col;
+                                                        while sc > 0 && sc - 1 < line.len() && is_word_char(line[sc - 1].ch) {
+                                                            sc -= 1;
+                                                        }
+                                                        let mut ec = col;
+                                                        while ec + 1 < line.len() && is_word_char(line[ec + 1].ch) {
+                                                            ec += 1;
+                                                        }
+                                                        tw.text_selection = Some(TextSelection {
+                                                            pane_idx: pi,
+                                                            start: (row, sc),
+                                                            end: (row, ec),
+                                                            in_progress: false,
+                                                        });
+                                                    } else {
+                                                        tw.text_selection = None;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        tw.last_click_time = None;
+                                        tw.last_click_pos = None;
+                                    } else {
+                                        // Single click: start drag selection
+                                        tw.last_click_time = Some(now);
+                                        tw.last_click_pos = Some((cx, cy));
+                                        if let Some((pi, row, col)) = tw.pixel_to_cell(cx, cy, &self.config) {
+                                            tw.text_selection = Some(TextSelection {
+                                                pane_idx: pi,
+                                                start: (row, col),
+                                                end: (row, col),
+                                                in_progress: true,
+                                            });
+                                        } else {
+                                            tw.text_selection = None;
+                                        }
+                                    }
                                 }
                                 tw.window.request_redraw();
                             }
                         }
                         ElementState::Released => {
                             tw.drag_selecting = false;
+                            // Finalize text selection
+                            if let Some(ref mut sel) = tw.text_selection {
+                                sel.in_progress = false;
+                                // If start == end (click with no drag), clear selection
+                                if sel.start == sel.end {
+                                    tw.text_selection = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -877,6 +1584,12 @@ impl ApplicationHandler for App {
                     };
 
                     if lines != 0 && pane_idx < tw.panes.len() {
+                        // Clear text selection if scrolling the pane that has selection
+                        if let Some(ref sel) = tw.text_selection {
+                            if sel.pane_idx == pane_idx {
+                                tw.text_selection = None;
+                            }
+                        }
                         if lines > 0 {
                             tw.panes[pane_idx].scroll_up(lines as usize);
                         } else {
@@ -918,6 +1631,12 @@ impl ApplicationHandler for App {
                             } else {
                                 None
                             };
+                            let text_selection = tw.text_selection.as_ref()
+                                .filter(|s| s.pane_idx == i)
+                                .map(|s| {
+                                    let (sr, sc, er, ec) = TermaniaWindow::normalized_selection(s);
+                                    (sr, sc, er, ec)
+                                });
                             renderer::PaneRenderData {
                                 title: tw.panes[i].title().to_string(),
                                 plugin_data: tw.panes[i].render_data(),
@@ -927,6 +1646,7 @@ impl ApplicationHandler for App {
                                 is_selected: tw.selected_panes.contains(&i),
                                 broadcast_mode: tw.broadcast_mode,
                                 rename_input,
+                                text_selection,
                             }
                         })
                         .collect();
@@ -939,18 +1659,50 @@ impl ApplicationHandler for App {
                         scale,
                     );
                     let overlay = tw.command_overlay.as_ref().map(|o| {
-                        let target_label = match &o.targets {
-                            None => "Send to ALL panes".to_string(),
-                            Some(targets) => {
-                                let names: Vec<String> = targets.iter()
-                                    .map(|&i| format!("Pane {}", i + 1))
-                                    .collect();
-                                format!("Send to: {}", names.join(", "))
+                        let target_label = match o.mode {
+                            OverlayMode::TokenInput => "Paste Anthropic OAuth token".to_string(),
+                            _ => match &o.targets {
+                                None => "Send to ALL panes".to_string(),
+                                Some(targets) => {
+                                    let names: Vec<String> = targets.iter()
+                                        .map(|&i| format!("Pane {}", i + 1))
+                                        .collect();
+                                    format!("Send to: {}", names.join(", "))
+                                }
+                            },
+                        };
+                        let mode_label = match o.mode {
+                            OverlayMode::Llm => "AI".to_string(),
+                            OverlayMode::RawCommand => "CMD".to_string(),
+                            OverlayMode::TokenInput => "TOKEN".to_string(),
+                        };
+                        let mut response_lines = Vec::new();
+                        if let Some(ref resp) = o.llm_response {
+                            response_lines.push(resp.explanation.clone());
+                            for action in &resp.actions {
+                                response_lines.push(llm::format_action_for_display(action));
                             }
+                        }
+                        let no_llm_hint = if matches!(o.mode, OverlayMode::TokenInput) {
+                            Some("Run `claude login` to authenticate, then relaunch. Or paste a token and hit Enter.".to_string())
+                        } else if self.llm_client.is_none() {
+                            Some("Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY for AI mode".to_string())
+                        } else {
+                            None
+                        };
+                        // Mask token input
+                        let display_text = if matches!(o.mode, OverlayMode::TokenInput) && !o.input.is_empty() {
+                            "\u{2022}".repeat(o.input.len().min(40))
+                        } else {
+                            o.input.clone()
                         };
                         renderer::OverlayRenderData {
-                            text: o.input.clone(),
+                            text: display_text,
                             target_label,
+                            mode_label,
+                            is_thinking: o.llm_thinking,
+                            response_lines,
+                            no_llm_hint,
                         }
                     });
                     tw.renderer.render(&pane_data, &grid_layout, overlay.as_ref(), tw.show_help, tw.help_scroll);
@@ -967,6 +1719,36 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let mut any_dirty_global = false;
+
+        // Poll LLM status
+        if let Some(ref client) = self.llm_client {
+            if let Ok(status) = client.status_rx.try_recv() {
+                // Find the window with an active LLM overlay
+                for tw in self.windows.values_mut() {
+                    if let Some(ref mut overlay) = tw.command_overlay {
+                        if overlay.llm_thinking {
+                            match status {
+                                llm::LlmStatus::Thinking => {}
+                                llm::LlmStatus::Complete(response) => {
+                                    overlay.llm_thinking = false;
+                                    overlay.llm_response = Some(response);
+                                    tw.window.request_redraw();
+                                }
+                                llm::LlmStatus::Failed(err) => {
+                                    overlay.llm_thinking = false;
+                                    overlay.llm_response = Some(llm::LlmResponse {
+                                        explanation: format!("Error: {}", err),
+                                        actions: vec![],
+                                    });
+                                    tw.window.request_redraw();
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         for tw in self.windows.values_mut() {
             // Debounced resize
@@ -1024,16 +1806,27 @@ impl ApplicationHandler for App {
             // Text tap commands target panes by global index
             // For now, route to the first window's panes
             if let Some(tw) = self.windows.values_mut().next() {
-                match cmd.target {
-                    text_tap::TapTarget::Pane(idx) => {
-                        if idx < tw.panes.len() {
-                            tw.panes[idx].write_input(cmd.input.as_bytes());
+                match cmd {
+                    text_tap::TapCommand::Send { target, input } => {
+                        match target {
+                            text_tap::TapTarget::Pane(idx) => {
+                                if idx < tw.panes.len() {
+                                    tw.panes[idx].write_input(input.as_bytes());
+                                }
+                            }
+                            text_tap::TapTarget::All => {
+                                for pane in &mut tw.panes {
+                                    pane.write_input(input.as_bytes());
+                                }
+                            }
                         }
                     }
-                    text_tap::TapTarget::All => {
-                        for pane in &mut tw.panes {
-                            pane.write_input(cmd.input.as_bytes());
+                    text_tap::TapCommand::Action(action) => {
+                        let result = tw.execute_action(&action, &self.config);
+                        if let llm::ActionResult::Error { message } = result {
+                            log::warn!("Text tap action failed: {}", message);
                         }
+                        tw.window.request_redraw();
                     }
                 }
             }

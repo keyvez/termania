@@ -26,12 +26,18 @@ pub struct PaneRenderData {
     pub broadcast_mode: bool,
     /// If set, this pane's title bar shows a rename input field
     pub rename_input: Option<String>,
+    /// Text selection range: (start_row, start_col, end_row, end_col) in displayed lines
+    pub text_selection: Option<(usize, usize, usize, usize)>,
 }
 
 /// Data for the command overlay
 pub struct OverlayRenderData {
     pub text: String,
     pub target_label: String,
+    pub mode_label: String,
+    pub is_thinking: bool,
+    pub response_lines: Vec<String>,
+    pub no_llm_hint: Option<String>,
 }
 
 /// Vertex for textured quad rendering
@@ -49,6 +55,18 @@ struct Vertex {
 struct RectVertex {
     position: [f32; 2],
     color: [f32; 4],
+}
+
+/// Vertex for SDF rounded rectangles
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct RoundedRectVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+    local_pos: [f32; 2],
+    half_size: [f32; 2],
+    radius: f32,
+    border_thickness: f32,
 }
 
 pub struct Renderer {
@@ -82,6 +100,7 @@ pub struct Renderer {
 
     // Pipelines
     rect_pipeline: wgpu::RenderPipeline,
+    rounded_rect_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
     text_bind_group_layout: wgpu::BindGroupLayout,
     text_bind_group: wgpu::BindGroup,
@@ -94,6 +113,7 @@ pub struct Renderer {
     border_focused_color: [f32; 4],
     title_bg_color: [f32; 4],
     title_fg_color: [f32; 4],
+    selection_color: [f32; 4],
     ansi_colors: [[f32; 4]; 16],
 
     /// Cell width in physical pixels
@@ -446,6 +466,82 @@ impl Renderer {
             cache: None,
         });
 
+        // Shader for SDF rounded rectangles
+        let rounded_rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Rounded Rect Shader"),
+            source: wgpu::ShaderSource::Wgsl(ROUNDED_RECT_SHADER.into()),
+        });
+
+        let rounded_rect_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Rounded Rect Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let rounded_rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Rounded Rect Pipeline"),
+            layout: Some(&rounded_rect_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &rounded_rect_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<RoundedRectVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x2, // position
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 8,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x4, // color
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x2, // local_pos
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 32,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Float32x2, // half_size
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 40,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Float32,   // radius
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 44,
+                            shader_location: 5,
+                            format: wgpu::VertexFormat::Float32,   // border_thickness
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &rounded_rect_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         // Shader for textured glyphs
         let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Text Shader"),
@@ -554,6 +650,7 @@ impl Renderer {
         let border_focused_color = parse_hex_color(&config.colors.border_focused);
         let title_bg_color = parse_hex_color(&config.colors.title_bg);
         let title_fg_color = parse_hex_color(&config.colors.title_fg);
+        let selection_color = parse_hex_color(&config.colors.selection);
 
         let mut ansi_colors = [[0.0f32; 4]; 16];
         for (i, hex) in config.colors.ansi.iter().enumerate() {
@@ -582,6 +679,7 @@ impl Renderer {
             atlas_row_height: 0,
             glyph_cache: HashMap::new(),
             rect_pipeline,
+            rounded_rect_pipeline,
             text_pipeline,
             text_bind_group_layout,
             text_bind_group,
@@ -592,6 +690,7 @@ impl Renderer {
             border_focused_color,
             title_bg_color,
             title_fg_color,
+            selection_color,
             ansi_colors,
             cell_width,
             cell_height,
@@ -1021,6 +1120,53 @@ impl Renderer {
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
+    /// Push an SDF rounded rectangle (filled or outline-only).
+    /// `border_thickness` > 0 renders only the border ring; 0 renders a filled rounded rect.
+    fn push_rounded_rect(
+        vertices: &mut Vec<RoundedRectVertex>,
+        indices: &mut Vec<u32>,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        border_thickness: f32,
+        color: [f32; 4],
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        let base = vertices.len() as u32;
+
+        let to_ndc = |px: f32, py: f32| -> [f32; 2] {
+            [
+                (px / screen_w) * 2.0 - 1.0,
+                1.0 - (py / screen_h) * 2.0,
+            ]
+        };
+
+        let half_size = [w / 2.0, h / 2.0];
+        // local_pos: coordinates relative to center of rect, corners of the quad
+        let corners = [
+            (x, y, [-half_size[0], -half_size[1]]),
+            (x + w, y, [half_size[0], -half_size[1]]),
+            (x + w, y + h, [half_size[0], half_size[1]]),
+            (x, y + h, [-half_size[0], half_size[1]]),
+        ];
+
+        for (px, py, local_pos) in corners {
+            vertices.push(RoundedRectVertex {
+                position: to_ndc(px, py),
+                color,
+                local_pos,
+                half_size,
+                radius,
+                border_thickness,
+            });
+        }
+
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
     /// Push a textured glyph quad
     fn push_glyph(
         vertices: &mut Vec<Vertex>,
@@ -1111,7 +1257,8 @@ impl Renderer {
             ("COMMAND OVERLAY", ""),
             ("\u{2318}+\u{21e7}+\u{23ce}", "Open command overlay"),
             ("\u{2325}+\u{2325}", "Open command overlay"),
-            ("Enter", "Send command"),
+            ("!command", "Raw mode (bypass AI)"),
+            ("Enter", "Send / Execute AI actions"),
             ("Escape", "Cancel"),
             ("", ""),
             ("OTHER", ""),
@@ -1269,10 +1416,13 @@ impl Renderer {
         // Build geometry
         let mut rect_vertices: Vec<RectVertex> = Vec::with_capacity(4096);
         let mut rect_indices: Vec<u32> = Vec::with_capacity(6144);
+        let mut rounded_rect_vertices: Vec<RoundedRectVertex> = Vec::with_capacity(1024);
+        let mut rounded_rect_indices: Vec<u32> = Vec::with_capacity(1536);
         let mut text_vertices: Vec<Vertex> = Vec::with_capacity(16384);
         let mut text_indices: Vec<u32> = Vec::with_capacity(24576);
 
         let border_width = 2.0f32 * self.scale_factor;
+        let border_radius = self.config.grid.border_radius as f32 * self.scale_factor;
 
         for (i, layout) in layouts.iter().enumerate() {
             if i >= panes.len() {
@@ -1293,28 +1443,27 @@ impl Renderer {
                 self.border_color
             };
 
-            // Top border
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                layout.x, layout.y, layout.width, border_width,
-                border_color, sw, sh);
-            // Bottom border
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                layout.x, layout.y + layout.height - border_width, layout.width, border_width,
-                border_color, sw, sh);
-            // Left border
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                layout.x, layout.y, border_width, layout.height,
-                border_color, sw, sh);
-            // Right border
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                layout.x + layout.width - border_width, layout.y, border_width, layout.height,
+            // Filled rounded rect background for entire pane area (draws behind everything)
+            Self::push_rounded_rect(&mut rounded_rect_vertices, &mut rounded_rect_indices,
+                layout.x, layout.y, layout.width, layout.height,
+                border_radius, 0.0,
+                self.bg_color, sw, sh);
+
+            // Outline rounded rect border (draws on top of background)
+            Self::push_rounded_rect(&mut rounded_rect_vertices, &mut rounded_rect_indices,
+                layout.x, layout.y, layout.width, layout.height,
+                border_radius, border_width,
                 border_color, sw, sh);
 
-            // Title bar background
+            // Title bar background — use rounded rect so top corners follow the pane border
             let title_y = layout.y + border_width;
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
+            let inner_r = (border_radius - border_width).max(0.0);
+            // Extend title bar down by inner_r so the bottom edge (which is rounded)
+            // is hidden behind the content area, giving the appearance of only top-rounded corners
+            Self::push_rounded_rect(&mut rounded_rect_vertices, &mut rounded_rect_indices,
                 layout.x + border_width, title_y,
-                layout.width - 2.0 * border_width, layout.title_height,
+                layout.width - 2.0 * border_width, layout.title_height + inner_r,
+                inner_r, 0.0,
                 self.title_bg_color, sw, sh);
 
             // Title text (or rename input)
@@ -1384,12 +1533,8 @@ impl Renderer {
             let content_x = layout.x + border_width + inner_pad;
             let content_y = title_y + layout.title_height;
 
-            // Background for content area
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                layout.x + border_width, content_y,
-                layout.width - 2.0 * border_width,
-                layout.height - border_width * 2.0 - layout.title_height,
-                self.bg_color, sw, sh);
+            // Content area background is provided by the filled rounded rect above.
+            // No separate sharp-cornered rect needed — that would bleed over rounded corners.
 
             // Render content based on plugin type
             match &pane.plugin_data {
@@ -1503,74 +1648,221 @@ impl Renderer {
                 }
             }
 
+            // Draw text selection highlights
+            if let Some((sel_sr, sel_sc, sel_er, sel_ec)) = pane.text_selection {
+                let sel_color = [self.selection_color[0], self.selection_color[1], self.selection_color[2], 0.4];
+                // Normalize: ensure start <= end in reading order
+                let (sr, sc, er, ec) = if (sel_sr, sel_sc) <= (sel_er, sel_ec) {
+                    (sel_sr, sel_sc, sel_er, sel_ec)
+                } else {
+                    (sel_er, sel_ec, sel_sr, sel_sc)
+                };
+                if let PanePluginRenderData::Terminal { ref lines, .. } = pane.plugin_data {
+                    let num_cols = lines.first().map(|r| r.len()).unwrap_or(0);
+                    for row in sr..=er {
+                        if row >= lines.len() { break; }
+                        let col_start = if row == sr { sc } else { 0 };
+                        let col_end = if row == er { ec } else { num_cols.saturating_sub(1) };
+                        if col_start > col_end { continue; }
+                        let rx = content_x + col_start as f32 * self.cell_width;
+                        let ry = content_y + inner_pad + row as f32 * self.cell_height;
+                        let rw = (col_end - col_start + 1) as f32 * self.cell_width;
+                        Self::push_rect(&mut rect_vertices, &mut rect_indices,
+                            rx, ry, rw, self.cell_height,
+                            sel_color, sw, sh);
+                    }
+                }
+            }
+
             // Inactive pane fade overlay — dim unfocused panes
+            // Use a rounded rect so the overlay doesn't bleed past the rounded pane corners
             if !pane.is_focused {
-                Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                    layout.x + border_width, content_y,
-                    layout.width - 2.0 * border_width,
-                    layout.height - border_width * 2.0 - layout.title_height,
+                let fade_x = layout.x + border_width;
+                let fade_y = content_y;
+                let fade_w = layout.width - 2.0 * border_width;
+                let fade_h = layout.height - border_width * 2.0 - layout.title_height;
+                let inner_r = (border_radius - border_width).max(0.0);
+                // Only bottom corners need rounding; top is covered by title bar.
+                // Use a rounded rect for the full area with inner radius.
+                Self::push_rounded_rect(&mut rounded_rect_vertices, &mut rounded_rect_indices,
+                    fade_x, fade_y, fade_w, fade_h,
+                    inner_r, 0.0,
                     [0.0, 0.0, 0.0, 0.3], sw, sh);
             }
 
             // Error detection red tint overlay
             if pane.has_error {
-                Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                    layout.x + border_width, content_y,
-                    layout.width - 2.0 * border_width,
-                    layout.height - border_width * 2.0 - layout.title_height,
+                let err_x = layout.x + border_width;
+                let err_y = content_y;
+                let err_w = layout.width - 2.0 * border_width;
+                let err_h = layout.height - border_width * 2.0 - layout.title_height;
+                let inner_r = (border_radius - border_width).max(0.0);
+                Self::push_rounded_rect(&mut rounded_rect_vertices, &mut rounded_rect_indices,
+                    err_x, err_y, err_w, err_h,
+                    inner_r, 0.0,
                     [0.8, 0.0, 0.0, 0.08], sw, sh);
             }
         }
 
-        // Render command overlay
+        // Build command overlay into separate buffers so it draws on top of pane text
+        let mut cmd_rounded_rect_vertices: Vec<RoundedRectVertex> = Vec::new();
+        let mut cmd_rounded_rect_indices: Vec<u32> = Vec::new();
+        let mut cmd_rect_vertices: Vec<RectVertex> = Vec::new();
+        let mut cmd_rect_indices: Vec<u32> = Vec::new();
+        let mut cmd_text_vertices: Vec<Vertex> = Vec::new();
+        let mut cmd_text_indices: Vec<u32> = Vec::new();
         if let Some(overlay) = overlay {
             let s = self.scale_factor;
-            let overlay_w = (500.0 * s).min(sw - 40.0 * s);
-            let overlay_h = 60.0 * s;
+            let overlay_w = (600.0 * s).min(sw - 40.0 * s);
+            let pad = 10.0 * s;
+
+            // Calculate dynamic height based on content
+            let line_h = self.cell_height;
+            let base_lines = 3.0; // target label + input + spacing
+            let response_count = overlay.response_lines.len() as f32;
+            let thinking_line = if overlay.is_thinking { 1.0 } else { 0.0 };
+            let hint_line = if !overlay.response_lines.is_empty() || overlay.no_llm_hint.is_some() { 1.0 } else { 0.0 };
+            let total_lines = base_lines + response_count + thinking_line + hint_line;
+            let overlay_h = (total_lines * line_h + 2.0 * pad).max(60.0 * s);
             let overlay_x = (sw - overlay_w) / 2.0;
-            let overlay_y = sh - overlay_h - 40.0 * s;
+            let overlay_y = (sh - overlay_h) / 2.0;
             let ob = 2.0 * s; // overlay border
 
-            // Background
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                overlay_x, overlay_y, overlay_w, overlay_h,
-                [0.1, 0.1, 0.12, 0.95], sw, sh);
-            // Border
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                overlay_x, overlay_y, overlay_w, ob,
-                [0.4, 0.6, 1.0, 0.8], sw, sh);
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                overlay_x, overlay_y + overlay_h - ob, overlay_w, ob,
-                [0.4, 0.6, 1.0, 0.8], sw, sh);
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                overlay_x, overlay_y, ob, overlay_h,
-                [0.4, 0.6, 1.0, 0.8], sw, sh);
-            Self::push_rect(&mut rect_vertices, &mut rect_indices,
-                overlay_x + overlay_w - ob, overlay_y, ob, overlay_h,
-                [0.4, 0.6, 1.0, 0.8], sw, sh);
+            // Border color depends on mode
+            let border_color = if overlay.mode_label == "AI" {
+                [0.4, 0.6, 1.0, 1.0] // blue for AI
+            } else if overlay.mode_label == "TOKEN" {
+                [0.9, 0.6, 0.2, 1.0] // orange for TOKEN
+            } else {
+                [0.3, 0.8, 0.4, 1.0] // green for CMD
+            };
 
-            // Target label (small, at top)
-            let label_y = overlay_y + 6.0 * s;
+            // Rounded background
+            let overlay_radius = border_radius;
+            Self::push_rounded_rect(&mut cmd_rounded_rect_vertices, &mut cmd_rounded_rect_indices,
+                overlay_x, overlay_y, overlay_w, overlay_h,
+                overlay_radius, 0.0,
+                [0.1, 0.1, 0.12, 1.0], sw, sh);
+            // Rounded border
+            Self::push_rounded_rect(&mut cmd_rounded_rect_vertices, &mut cmd_rounded_rect_indices,
+                overlay_x, overlay_y, overlay_w, overlay_h,
+                overlay_radius, ob,
+                border_color, sw, sh);
+
+            let mut cursor_y = overlay_y + pad;
+
+            // Mode badge + target label on the same line
+            let badge_color = if overlay.mode_label == "AI" {
+                [0.3, 0.5, 1.0, 1.0] // blue
+            } else if overlay.mode_label == "TOKEN" {
+                [0.9, 0.6, 0.2, 1.0] // orange
+            } else {
+                [0.2, 0.7, 0.3, 1.0] // green
+            };
+            // Badge background
+            let badge_w = (overlay.mode_label.len() as f32 + 1.0) * self.cell_width;
+            Self::push_rect(&mut cmd_rect_vertices, &mut cmd_rect_indices,
+                overlay_x + pad, cursor_y, badge_w, line_h,
+                [badge_color[0] * 0.3, badge_color[1] * 0.3, badge_color[2] * 0.3, 0.9], sw, sh);
+            // Badge text
+            for (ci, ch) in overlay.mode_label.chars().enumerate() {
+                let glyph = self.rasterize_glyph(ch, true, false);
+                let cx = overlay_x + pad + self.cell_width * 0.5 + ci as f32 * self.cell_width;
+                Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                    cx, cursor_y, &glyph, badge_color, sw, sh);
+            }
+
+            // Target label after badge
+            let label_x = overlay_x + pad + badge_w + pad;
             let label_color = [0.5, 0.7, 1.0, 1.0];
             for (ci, ch) in overlay.target_label.chars().enumerate() {
                 let glyph = self.rasterize_glyph(ch, false, false);
-                let cx = overlay_x + 10.0 * s + ci as f32 * self.cell_width;
-                if cx + self.cell_width < overlay_x + overlay_w - 10.0 * s {
-                    Self::push_glyph(&mut text_vertices, &mut text_indices,
-                        cx, label_y, &glyph, label_color, sw, sh);
+                let cx = label_x + ci as f32 * self.cell_width;
+                if cx + self.cell_width < overlay_x + overlay_w - pad {
+                    Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                        cx, cursor_y, &glyph, label_color, sw, sh);
                 }
             }
+            cursor_y += line_h;
 
-            // Input text
-            let input_y = overlay_y + 28.0 * s;
+            // No-LLM hint (if applicable)
+            if let Some(ref hint) = overlay.no_llm_hint {
+                let hint_color = [0.7, 0.5, 0.3, 0.8];
+                for (ci, ch) in hint.chars().enumerate() {
+                    let glyph = self.rasterize_glyph(ch, false, true);
+                    let cx = overlay_x + pad + ci as f32 * self.cell_width;
+                    if cx + self.cell_width < overlay_x + overlay_w - pad {
+                        Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                            cx, cursor_y, &glyph, hint_color, sw, sh);
+                    }
+                }
+                cursor_y += line_h;
+            }
+
+            // Input text with prompt
             let input_color = [0.9, 0.9, 0.95, 1.0];
-            let display_text = format!("> {}_", overlay.text);
+            let prompt_char = if overlay.mode_label == "AI" { "\u{2726} " } else { "> " };
+            let display_text = format!("{}{}_", prompt_char, overlay.text);
             for (ci, ch) in display_text.chars().enumerate() {
                 let glyph = self.rasterize_glyph(ch, false, false);
-                let cx = overlay_x + 10.0 * s + ci as f32 * self.cell_width;
-                if cx + self.cell_width < overlay_x + overlay_w - 10.0 * s {
-                    Self::push_glyph(&mut text_vertices, &mut text_indices,
-                        cx, input_y, &glyph, input_color, sw, sh);
+                let cx = overlay_x + pad + ci as f32 * self.cell_width;
+                if cx + self.cell_width < overlay_x + overlay_w - pad {
+                    Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                        cx, cursor_y, &glyph, input_color, sw, sh);
+                }
+            }
+            cursor_y += line_h;
+
+            // Thinking indicator
+            if overlay.is_thinking {
+                let dots = "Thinking...";
+                let thinking_color = [0.6, 0.7, 1.0, 0.8];
+                for (ci, ch) in dots.chars().enumerate() {
+                    let glyph = self.rasterize_glyph(ch, false, true);
+                    let cx = overlay_x + pad + ci as f32 * self.cell_width;
+                    Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                        cx, cursor_y, &glyph, thinking_color, sw, sh);
+                }
+                cursor_y += line_h;
+            }
+
+            // Response lines
+            if !overlay.response_lines.is_empty() {
+                // Separator line
+                Self::push_rect(&mut cmd_rect_vertices, &mut cmd_rect_indices,
+                    overlay_x + pad, cursor_y, overlay_w - 2.0 * pad, 1.0 * s,
+                    [0.3, 0.3, 0.35, 0.5], sw, sh);
+                cursor_y += 2.0 * s;
+
+                for (li, line) in overlay.response_lines.iter().enumerate() {
+                    let color = if li == 0 {
+                        [0.8, 0.85, 1.0, 1.0] // explanation
+                    } else if line.contains("$ ") {
+                        [0.5, 0.9, 0.5, 1.0] // commands (green)
+                    } else {
+                        [0.7, 0.7, 0.75, 1.0] // messages
+                    };
+                    for (ci, ch) in line.chars().enumerate() {
+                        let glyph = self.rasterize_glyph(ch, li == 0, false);
+                        let cx = overlay_x + pad + ci as f32 * self.cell_width;
+                        if cx + self.cell_width < overlay_x + overlay_w - pad {
+                            Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                                cx, cursor_y, &glyph, color, sw, sh);
+                        }
+                    }
+                    cursor_y += line_h;
+                }
+
+                // Action hint
+                let hint = "\u{23ce} Execute  \u{238b} Cancel";
+                let hint_color = [0.5, 0.5, 0.55, 0.7];
+                for (ci, ch) in hint.chars().enumerate() {
+                    let glyph = self.rasterize_glyph(ch, false, false);
+                    let cx = overlay_x + pad + ci as f32 * self.cell_width;
+                    if cx + self.cell_width < overlay_x + overlay_w - pad {
+                        Self::push_glyph(&mut cmd_text_vertices, &mut cmd_text_indices,
+                            cx, cursor_y, &glyph, hint_color, sw, sh);
+                    }
                 }
             }
         }
@@ -1586,6 +1878,17 @@ impl Renderer {
         }
 
         // Create GPU buffers
+        let rounded_rect_vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Rounded Rect VB"),
+            contents: bytemuck::cast_slice(&rounded_rect_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let rounded_rect_ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Rounded Rect IB"),
+            contents: bytemuck::cast_slice(&rounded_rect_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
         let rect_vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Rect VB"),
             contents: bytemuck::cast_slice(&rect_vertices),
@@ -1629,6 +1932,14 @@ impl Renderer {
                 ..Default::default()
             });
 
+            // Draw rounded rectangles first (pane backgrounds and borders)
+            if !rounded_rect_indices.is_empty() {
+                pass.set_pipeline(&self.rounded_rect_pipeline);
+                pass.set_vertex_buffer(0, rounded_rect_vb.slice(..));
+                pass.set_index_buffer(rounded_rect_ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..rounded_rect_indices.len() as u32, 0, 0..1);
+            }
+
             // Draw rectangles
             if !rect_indices.is_empty() {
                 pass.set_pipeline(&self.rect_pipeline);
@@ -1644,6 +1955,57 @@ impl Renderer {
                 pass.set_vertex_buffer(0, text_vb.slice(..));
                 pass.set_index_buffer(text_ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..text_indices.len() as u32, 0, 0..1);
+            }
+
+            // Draw command overlay on top of pane text
+            if !cmd_rounded_rect_indices.is_empty() {
+                let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay RRect VB"),
+                    contents: bytemuck::cast_slice(&cmd_rounded_rect_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay RRect IB"),
+                    contents: bytemuck::cast_slice(&cmd_rounded_rect_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                pass.set_pipeline(&self.rounded_rect_pipeline);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..cmd_rounded_rect_indices.len() as u32, 0, 0..1);
+            }
+            if !cmd_rect_indices.is_empty() {
+                let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay Rect VB"),
+                    contents: bytemuck::cast_slice(&cmd_rect_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay Rect IB"),
+                    contents: bytemuck::cast_slice(&cmd_rect_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                pass.set_pipeline(&self.rect_pipeline);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..cmd_rect_indices.len() as u32, 0, 0..1);
+            }
+            if !cmd_text_indices.is_empty() {
+                let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay Text VB"),
+                    contents: bytemuck::cast_slice(&cmd_text_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cmd Overlay Text IB"),
+                    contents: bytemuck::cast_slice(&cmd_text_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                pass.set_pipeline(&self.text_pipeline);
+                pass.set_bind_group(0, &self.text_bind_group, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..cmd_text_indices.len() as u32, 0, 0..1);
             }
 
             // Draw help overlay on top of everything (separate draw calls so it
@@ -1849,5 +2211,73 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = textureSample(t_glyph, s_glyph, in.tex_coords).r;
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}
+"#;
+
+/// WGSL shader for SDF rounded rectangles with anti-aliased edges.
+/// Uses fwidth() for screen-space adaptive anti-aliasing.
+const ROUNDED_RECT_SHADER: &str = r#"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) local_pos: vec2<f32>,
+    @location(3) half_size: vec2<f32>,
+    @location(4) radius: f32,
+    @location(5) border_thickness: f32,
+};
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) local_pos: vec2<f32>,
+    @location(2) half_size: vec2<f32>,
+    @location(3) radius: f32,
+    @location(4) border_thickness: f32,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = vec4<f32>(in.position, 0.0, 1.0);
+    out.color = in.color;
+    out.local_pos = in.local_pos;
+    out.half_size = in.half_size;
+    out.radius = in.radius;
+    out.border_thickness = in.border_thickness;
+    return out;
+}
+
+// Signed distance to a rounded rectangle centered at origin
+fn sd_rounded_rect(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let q = abs(p) - half_size + vec2<f32>(radius, radius);
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let d = sd_rounded_rect(in.local_pos, in.half_size, in.radius);
+    // Use screen-space derivatives for crisp, resolution-independent AA
+    let aa = fwidth(d) * 0.75;
+
+    if in.border_thickness > 0.0 {
+        // Outline mode: only show the border ring
+        let inner_half = in.half_size - vec2<f32>(in.border_thickness, in.border_thickness);
+        let inner_r = max(in.radius - in.border_thickness, 0.0);
+        let inner_d = sd_rounded_rect(in.local_pos, inner_half, inner_r);
+        let outer_alpha = 1.0 - smoothstep(-aa, aa, d);
+        let inner_alpha = 1.0 - smoothstep(-aa, aa, inner_d);
+        let alpha = outer_alpha * (1.0 - inner_alpha);
+        if alpha < 0.001 {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    } else {
+        // Filled mode
+        let alpha = 1.0 - smoothstep(-aa, aa, d);
+        if alpha < 0.001 {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    }
 }
 "#;

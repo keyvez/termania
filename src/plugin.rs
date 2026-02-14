@@ -108,4 +108,20 @@ pub trait PanePlugin: Send {
     /// Initialize the native view with the parent NSView pointer.
     /// Called once during startup for native-view plugins (WebView, Notes).
     fn init_native_view_with_parent(&mut self, _parent_view: *mut std::ffi::c_void) {}
+
+    /// Navigate to a URL (webview panes only). Returns true if supported.
+    fn navigate(&mut self, _url: &str) -> bool { false }
+
+    /// Set text content (notes panes only). Returns true if supported.
+    fn set_content(&mut self, _content: &str) -> bool { false }
+
+    /// Return the pane type as a string identifier
+    fn pane_type_str(&self) -> &str {
+        match self.pane_type() {
+            PaneType::Terminal => "terminal",
+            PaneType::WebView => "webview",
+            PaneType::Notes => "notes",
+            PaneType::ScreenCapture => "screen_capture",
+        }
+    }
 }

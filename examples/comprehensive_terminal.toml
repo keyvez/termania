@@ -1,0 +1,463 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                    TERMANIA — COMPREHENSIVE CONFIGURATION                  ║
+# ║                                                                            ║
+# ║  This file documents EVERY configurable parameter in Termania.             ║
+# ║  It combines both config.toml (visual/global) and session (per-project)    ║
+# ║  settings into a single reference.                                         ║
+# ║                                                                            ║
+# ║  Config file locations:                                                    ║
+# ║    Global config:  ~/.config/termania/config.toml                          ║
+# ║    Global session: ~/.config/termania/termania.toml                        ║
+# ║    Per-project:    ./termania.toml (current working directory)             ║
+# ║                                                                            ║
+# ║  Session lookup order:                                                     ║
+# ║    1. Explicit path:  termania examples/mysession.toml                     ║
+# ║    2. ./termania.toml (current working directory)                          ║
+# ║    3. ~/.config/termania/termania.toml                                     ║
+# ║    4. Falls back to [[panes]] in config.toml                               ║
+# ║                                                                            ║
+# ║  CLI usage:                                                                ║
+# ║    termania                          # Use default config/session           ║
+# ║    termania path/to/session.toml     # Load specific session file          ║
+# ║    termania -h / --help              # Print help message                  ║
+# ║    termania -v / --version           # Print version                       ║
+# ║                                                                            ║
+# ║  Environment variables:                                                    ║
+# ║    RUST_LOG          — Log level (e.g., RUST_LOG=debug)                    ║
+# ║    SHELL             — Default shell if not specified in pane config       ║
+# ║    ANTHROPIC_API_KEY  — Anthropic API key (fallback if not in config)      ║
+# ║    OPENAI_API_KEY     — OpenAI API key (fallback if not in config)         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                         SESSION-LEVEL SETTINGS                             │
+# │                                                                            │
+# │  These top-level keys are session config (termania.toml / session files).  │
+# │  They override the corresponding [grid] and [window] values in config.toml │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+# Window title (overrides [window] title in config.toml)
+title = "Comprehensive Example"
+
+# Grid dimensions (override [grid] rows/cols in config.toml)
+rows = 3
+cols = 3
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                              [font]                                        │
+# │                                                                            │
+# │  Typography settings for all terminal panes.                               │
+# │  (Only in config.toml — not session files)                                 │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[font]
+family = "SF Mono"             # Font family name. Examples: "JetBrains Mono", "Menlo",
+                               #   "SF Mono", "Fira Code", "Cascadia Code"
+                               # Default: "SF Mono"
+
+size = 14.0                    # Font size in points.
+                               # Default: 14.0
+
+line_height = 1.2              # Line height multiplier (1.0 = tight, 1.5 = loose).
+                               # Default: 1.2
+
+letter_spacing = 0.0           # Extra horizontal spacing between characters in pixels.
+                               # Default: 0.0
+
+bold_family = "Menlo"          # Optional: Use a separate font family for bold text.
+                               # If omitted, the regular family is used with bold weight.
+                               # Default: None (uses family)
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                              [grid]                                        │
+# │                                                                            │
+# │  Grid layout for the pane tiling system.                                   │
+# │  rows/cols can be overridden by session-level rows/cols above.             │
+# │  (Only in config.toml — not session files)                                 │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[grid]
+rows = 3                       # Number of rows in the pane grid.
+                               # Default: 3
+
+cols = 3                       # Number of columns in the pane grid.
+                               # Default: 3
+
+gap = 4                        # Gap between panes in pixels.
+                               # Default: 4
+
+inner_padding = 4              # Padding inside each pane (between border and content) in pixels.
+                               # Default: 4
+
+outer_padding = 4              # Padding around the entire grid (window edge to panes) in pixels.
+                               # Default: 4
+
+title_bar_height = 24          # Height of each pane's title bar in pixels.
+                               # Default: 24
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                             [window]                                       │
+# │                                                                            │
+# │  Initial window dimensions and title.                                      │
+# │  Title can be overridden by session-level title above.                     │
+# │  (Only in config.toml — not session files)                                 │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[window]
+width = 1920                   # Initial window width in pixels.
+                               # Default: 1920
+
+height = 1080                  # Initial window height in pixels.
+                               # Default: 1080
+
+title = "Termania"             # Window title (shown in title bar / taskbar).
+                               # Overridden by session-level `title` if present.
+                               # Default: "Termania"
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                             [colors]                                       │
+# │                                                                            │
+# │  Color scheme for the terminal. All values are hex strings (#RRGGBB).      │
+# │  Default theme: GitHub Dark (high contrast).                               │
+# │  (Only in config.toml — not session files)                                 │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[colors]
+background = "#010409"         # Background color for all panes.
+                               # Default: "#010409" (near-black)
+
+foreground = "#e6edf3"         # Default text/foreground color.
+                               # Default: "#e6edf3" (bright white)
+
+cursor = "#f0f6fc"             # Cursor block color.
+                               # Default: "#f0f6fc" (high-visibility white)
+
+selection = "#264f78"          # Text selection highlight color.
+                               # Default: "#264f78" (blue tint)
+
+border = "#30363d"             # Unfocused pane border color.
+                               # Default: "#30363d" (subtle gray)
+
+border_focused = "#58a6ff"     # Focused/active pane border color.
+                               # Default: "#58a6ff" (bright blue)
+
+title_bg = "#0d1117"           # Title bar background color.
+                               # Default: "#0d1117" (dark gray)
+
+title_fg = "#e6edf3"           # Title bar text color.
+                               # Default: "#e6edf3" (bright white)
+
+# ANSI color palette — 16 colors: 8 normal (0–7) + 8 bright (8–15).
+# These are used by terminal programs via ANSI escape codes.
+ansi = [
+    "#0d1117",                 #  0  Black
+    "#ff7b72",                 #  1  Red
+    "#3fb950",                 #  2  Green
+    "#d29922",                 #  3  Yellow
+    "#58a6ff",                 #  4  Blue
+    "#bc8cff",                 #  5  Magenta
+    "#39d353",                 #  6  Cyan
+    "#c9d1d9",                 #  7  White
+    "#484f58",                 #  8  Bright Black (Gray)
+    "#ffa198",                 #  9  Bright Red
+    "#56d364",                 # 10  Bright Green
+    "#e3b341",                 # 11  Bright Yellow
+    "#79c0ff",                 # 12  Bright Blue
+    "#d2a8ff",                 # 13  Bright Magenta
+    "#56d364",                 # 14  Bright Cyan
+    "#f0f6fc",                 # 15  Bright White
+]
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                            [text_tap]                                      │
+# │                                                                            │
+# │  Text Tap API — Unix socket server for external process integration.       │
+# │  Allows monitoring pane output and sending input from external scripts.    │
+# │  See examples/tap_client.py for a Python client example.                   │
+# │  (Only in config.toml — not session files)                                 │
+# │                                                                            │
+# │  Protocol: Newline-delimited JSON over Unix domain socket.                 │
+# │                                                                            │
+# │  Client → Server commands:                                                 │
+# │    {"subscribe": "all"}              — Subscribe to all pane updates       │
+# │    {"subscribe": 0}                  — Subscribe to specific pane          │
+# │    {"unsubscribe": 0}                — Unsubscribe from a pane             │
+# │    {"list": true}                    — List pane count                     │
+# │    {"send": 0, "input": "ls\r"}      — Send input to specific pane         │
+# │    {"send": "all", "input": "cmd\r"} — Send input to all panes             │
+# │                                                                            │
+# │  Server → Client responses:                                                │
+# │    {"pane": 0, "content": "..."}     — Pane content update                 │
+# │    {"panes": 9}                      — Total pane count                    │
+# │    {"ok": true}                      — Success confirmation                │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[text_tap]
+enabled = true                 # Enable/disable the text tap Unix socket server.
+                               # Default: true
+
+socket_path = "/tmp/termania.sock"
+                               # Path for the Unix domain socket.
+                               # Default: "/tmp/termania.sock"
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                              [llm]                                         │
+# │                                                                            │
+# │  LLM integration for the command overlay (Cmd+Shift+Enter).               │
+# │  Supports Anthropic, OpenAI, Ollama, and custom OpenAI-compatible APIs.    │
+# │  (Only in config.toml — not session files)                                 │
+# │                                                                            │
+# │  Provider defaults:                                                        │
+# │    anthropic — model: "claude-sonnet-4-20250514"                           │
+# │                API key: api_key or $ANTHROPIC_API_KEY                      │
+# │    openai   — model: "gpt-4o"                                             │
+# │                base_url: "https://api.openai.com/v1"                       │
+# │                API key: api_key or $OPENAI_API_KEY                         │
+# │    ollama   — model: "llama3"                                              │
+# │                base_url: "http://localhost:11434/v1"                        │
+# │                API key: api_key or $OPENAI_API_KEY or "ollama"             │
+# │    custom   — Same as ollama (OpenAI-compatible endpoint)                  │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+[llm]
+provider = "anthropic"         # LLM provider to use.
+                               # Options: "anthropic", "openai", "ollama", "custom"
+                               # Default: "anthropic"
+
+# api_key = "sk-..."          # API key for the provider.
+                               # Falls back to ANTHROPIC_API_KEY or OPENAI_API_KEY env vars.
+                               # Default: None (uses environment variable)
+
+# model = "claude-sonnet-4-20250514"
+                               # Model name (provider-specific).
+                               # Anthropic default: "claude-sonnet-4-20250514"
+                               # OpenAI default: "gpt-4o"
+                               # Ollama default: "llama3"
+                               # Default: None (uses provider default)
+
+# base_url = "http://localhost:11434/v1"
+                               # Base URL for Ollama/custom endpoints.
+                               # Only used with "ollama" or "custom" providers.
+                               # Ollama default: "http://localhost:11434/v1"
+                               # OpenAI default: "https://api.openai.com/v1"
+                               # Default: None (uses provider default)
+
+max_tokens = 1024              # Maximum tokens in the LLM response.
+                               # Default: 1024
+
+# system_prompt = "You are a helpful terminal assistant."
+                               # Custom system prompt override for the LLM.
+                               # If omitted, a built-in prompt with pane context is used.
+                               # Default: None (uses built-in prompt)
+
+
+# ┌──────────────────────────────────────────────────────────────────────────────┐
+# │                             [[panes]]                                      │
+# │                                                                            │
+# │  Pane definitions — each [[panes]] block defines one pane in the grid.     │
+# │  Panes fill the grid left-to-right, top-to-bottom.                         │
+# │  Can appear in session files OR as fallback in config.toml.                │
+# │                                                                            │
+# │  Available pane types:                                                     │
+# │    "terminal"       — Full terminal emulator with shell (default)          │
+# │    "webview"        — Embedded web browser (macOS only, WKWebView)         │
+# │    "notes"          — Editable text area (macOS only, NSTextView)          │
+# │    "screen_capture" — Mirror another app's window (macOS only, WIP)        │
+# └──────────────────────────────────────────────────────────────────────────────┘
+
+
+# ── Pane 1: Terminal (all parameters) ────────────────────────────────────────
+
+[[panes]]
+type = "terminal"              # Pane type. Default: "terminal" (can be omitted for terminals)
+
+title = "Dev Shell"            # Custom title shown in the pane's title bar.
+                               # Default: None (auto-generated, e.g., "Pane 1")
+
+command = "/bin/zsh"           # Command/shell to run in this pane.
+                               # Default: None (uses $SHELL environment variable)
+
+cwd = "~/Documents/Code"      # Working directory for the shell.
+                               # Supports ~ for home directory expansion.
+                               # Default: None (inherits from parent process)
+
+watermark = "DEV"              # Large faded background text displayed behind terminal content.
+                               # Useful for visually identifying panes at a glance.
+                               # Default: None (no watermark)
+
+initial_commands = [           # Commands to run automatically on pane startup.
+    "echo 'Welcome!'",        # Each command is sent as input with a carriage return (\r).
+    "ls -la",                  # Commands execute sequentially after the shell starts.
+]                              # Default: None (no startup commands)
+
+# env = [                     # Environment variables to set for this pane's shell.
+#     ["NODE_ENV", "development"],  # Each entry is a [key, value] pair.
+#     ["PORT", "3000"],       # These are set in addition to inherited env vars.
+# ]                           # Default: None (inherits parent environment)
+
+
+# ── Pane 2: Terminal (minimal — defaults only) ──────────────────────────────
+
+[[panes]]
+# With no fields specified, you get a terminal pane running $SHELL in the
+# inherited working directory with no watermark or startup commands.
+# type defaults to "terminal", all other fields are optional.
+
+
+# ── Pane 3: Terminal with watermark ─────────────────────────────────────────
+
+[[panes]]
+title = "Build"
+watermark = "BUILD"
+cwd = "~"
+initial_commands = ["echo 'Build pane ready.'"]
+
+
+# ── Pane 4: WebView (all parameters) ────────────────────────────────────────
+
+[[panes]]
+type = "webview"               # Embedded web browser pane (macOS only).
+                               # Uses WKWebView under the hood.
+                               # Click inside to interact — keyboard handled by WKWebView.
+
+title = "Documentation"        # Custom title for the webview pane.
+                               # Default: None
+
+url = "https://docs.rs"        # URL to load in the webview.
+                               # Default: None
+
+
+# ── Pane 5: Notes with in-memory content (all parameters) ───────────────────
+
+[[panes]]
+type = "notes"                 # Editable text area pane (macOS only).
+                               # Uses NSTextView under the hood.
+
+title = "Scratch Pad"          # Custom title for the notes pane.
+                               # Default: None
+
+content = """
+# Scratch Pad
+
+Type anything here. This content lives in memory only.
+
+- Click to focus and start typing
+- Content is NOT saved to disk (no `file` specified)
+- Supports plain text editing
+"""
+                               # Initial content for the notes pane.
+                               # Only used when no `file` is specified.
+                               # Content lives in memory and is lost on exit.
+                               # Default: None (empty note)
+
+
+# ── Pane 6: Notes with file persistence ─────────────────────────────────────
+
+[[panes]]
+type = "notes"
+
+title = "TODO List"
+
+file = "~/termania-todo.md"    # File path for persistent notes content.
+                               # Content is loaded from this file on startup
+                               # and auto-saved back on close.
+                               # Supports ~ for home directory.
+                               # Default: None (memory-only, use `content` for initial text)
+
+
+# ── Pane 7: Screen Capture — by bundle ID (all parameters) ──────────────────
+
+[[panes]]
+type = "screen_capture"        # Mirror another app's window into this pane (macOS only).
+                               # Uses ScreenCaptureKit (work in progress).
+
+title = "Safari Mirror"        # Custom title for the capture pane.
+                               # Default: None (falls back to "Screen Capture")
+
+target = "com.apple.Safari"    # Target application bundle ID to capture.
+                               # Examples: "com.apple.Safari", "com.apple.Terminal",
+                               #   "com.googlecode.iterm2", "com.microsoft.VSCode"
+                               # Default: None
+
+# target_title = "My Window"  # Alternative: target a specific window by its title.
+                               # Use this instead of (or in addition to) `target`.
+                               # Default: None
+
+
+# ── Pane 8: Screen Capture — by window title ────────────────────────────────
+
+[[panes]]
+type = "screen_capture"
+
+title = "VS Code Mirror"
+
+target_title = "termania"      # Target window by its title string.
+                               # Default: None
+
+
+# ── Pane 9: Terminal with custom command ─────────────────────────────────────
+
+[[panes]]
+type = "terminal"
+title = "Logs"
+watermark = "LOGS"
+cwd = "~"
+command = "/bin/bash"
+initial_commands = ["echo 'Log viewer ready.'", "echo 'Try: tail -f /var/log/system.log'"]
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                          KEYBOARD SHORTCUTS                                ║
+# ║                                                                            ║
+# ║  These are hardcoded in main.rs and cannot be configured via TOML.         ║
+# ║  Listed here for reference.                                                ║
+# ╠══════════════════════════════════════════════════════════════════════════════╣
+# ║                                                                            ║
+# ║  ── Pane Management ──                                                     ║
+# ║  Cmd+N                    Add pane to right in current row                 ║
+# ║  Cmd+Option+N             Add new row with one pane                        ║
+# ║  Cmd+W                    Close focused pane                               ║
+# ║  Cmd+R                    Rename focused pane                              ║
+# ║  Cmd+Shift+N              New window                                       ║
+# ║                                                                            ║
+# ║  ── Navigation ──                                                          ║
+# ║  Cmd+1..9                 Jump to pane by number                           ║
+# ║  Cmd+]                    Next pane                                        ║
+# ║  Cmd+[                    Previous pane                                    ║
+# ║  Cmd+Shift+Arrow          Swap focused pane with neighbor                  ║
+# ║                                                                            ║
+# ║  ── Font Size ──                                                           ║
+# ║  Cmd++ / Cmd+=            Increase font size (+2pt)                        ║
+# ║  Cmd+-                    Decrease font size (-2pt)                        ║
+# ║  Cmd+0                    Reset font size to default                       ║
+# ║                                                                            ║
+# ║  ── Broadcast / Multi-Select ──                                            ║
+# ║  Cmd+Shift+B              Toggle broadcast mode (type in all panes)        ║
+# ║  Shift+Click+Drag         Rectangle-select multiple panes                  ║
+# ║  Cmd+Click                Toggle pane in/out of selection                  ║
+# ║  Cmd+Shift+A              Select all panes                                 ║
+# ║  Cmd+Shift+D              Deselect all panes                               ║
+# ║                                                                            ║
+# ║  ── Command Overlay ──                                                     ║
+# ║  Cmd+Shift+Enter          Open command overlay (LLM mode)                  ║
+# ║  Option+Option            Double-tap Option within 400ms to open overlay   ║
+# ║                                                                            ║
+# ║  ── Other ──                                                               ║
+# ║  Cmd+/ or Cmd+?           Toggle help overlay                              ║
+# ║  Cmd+,                    Open config.toml in default editor               ║
+# ║                                                                            ║
+# ║  ── Help Overlay Navigation ──                                             ║
+# ║  Escape                   Close help overlay                               ║
+# ║  ↑ / k                    Scroll up                                        ║
+# ║  ↓ / j                    Scroll down                                      ║
+# ║  Page Up                  Scroll up 10 lines                               ║
+# ║  Page Down                Scroll down 10 lines                             ║
+# ║  Home                     Scroll to top                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝

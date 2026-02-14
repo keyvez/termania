@@ -155,6 +155,28 @@ impl NotesPlugin {
         }
     }
 
+    /// Set the text content programmatically
+    pub fn set_text_content(&mut self, content: &str) {
+        self.content = content.to_string();
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ptr) = self.ns_view {
+                unsafe {
+                    use objc2_app_kit::{NSScrollView, NSTextView};
+                    use objc2_foundation::NSString;
+
+                    let scroll_view = &*(ptr as *const NSScrollView);
+                    if let Some(doc_view) = scroll_view.documentView() {
+                        let text_view: &NSTextView = &*((&*doc_view) as *const _ as *const NSTextView);
+                        let ns_string = NSString::from_str(content);
+                        text_view.setString(&ns_string);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Read current text content from the NSTextView
     fn read_text_from_view(&mut self) {
         #[cfg(target_os = "macos")]
@@ -291,6 +313,11 @@ impl PanePlugin for NotesPlugin {
                 }
             }
         }
+    }
+
+    fn set_content(&mut self, content: &str) -> bool {
+        self.set_text_content(content);
+        true
     }
 }
 

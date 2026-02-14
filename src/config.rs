@@ -10,6 +10,7 @@ pub struct Config {
     pub window: WindowConfig,
     pub colors: ColorConfig,
     pub text_tap: TextTapConfig,
+    pub llm: LlmConfig,
     pub panes: Vec<PaneConfig>,
 }
 
@@ -43,6 +44,8 @@ pub struct GridConfig {
     pub outer_padding: u32,
     /// Height of the title bar for each pane
     pub title_bar_height: u32,
+    /// Corner radius for pane borders in pixels (0 = sharp corners)
+    pub border_radius: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +89,36 @@ pub struct TextTapConfig {
     pub socket_path: String,
     /// Whether the text tap server is enabled
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LlmConfig {
+    /// LLM provider: "anthropic", "openai", "ollama", "custom"
+    pub provider: String,
+    /// API key (falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var)
+    pub api_key: Option<String>,
+    /// Model name (provider-specific default if None)
+    pub model: Option<String>,
+    /// Base URL for Ollama/custom endpoints
+    pub base_url: Option<String>,
+    /// Maximum tokens in LLM response
+    pub max_tokens: u32,
+    /// Custom system prompt override
+    pub system_prompt: Option<String>,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: "anthropic".to_string(),
+            api_key: None,
+            model: None,
+            base_url: None,
+            max_tokens: 1024,
+            system_prompt: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +246,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             colors: ColorConfig::default(),
             text_tap: TextTapConfig::default(),
+            llm: LlmConfig::default(),
             panes: Vec::new(),
         }
     }
@@ -233,12 +267,13 @@ impl Default for FontConfig {
 impl Default for GridConfig {
     fn default() -> Self {
         Self {
-            rows: 3,
-            cols: 3,
+            rows: 1,
+            cols: 1,
             gap: 4,
             inner_padding: 4,
             outer_padding: 4,
             title_bar_height: 24,
+            border_radius: 8,
         }
     }
 }
@@ -332,10 +367,32 @@ impl Config {
     }
 
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
+        // Prefer ~/.config/termania/config.toml (XDG standard, works across platforms).
+        // Fall back to platform-native config dir (~/Library/Application Support/ on macOS).
+        if let Ok(home) = std::env::var("HOME") {
+            let xdg_path = PathBuf::from(&home).join(".config/termania/config.toml");
+            if xdg_path.exists() {
+                return xdg_path;
+            }
+        }
+        if let Some(xdg) = std::env::var("XDG_CONFIG_HOME").ok().filter(|s| !s.is_empty()) {
+            let xdg_path = PathBuf::from(&xdg).join("termania/config.toml");
+            if xdg_path.exists() {
+                return xdg_path;
+            }
+        }
+        let native_path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("termania")
-            .join("config.toml")
+            .join("config.toml");
+        if native_path.exists() {
+            return native_path;
+        }
+        // If neither exists, default to ~/.config for new configs
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".config/termania/config.toml");
+        }
+        native_path
     }
 
     /// Get effective window title, preferring session override

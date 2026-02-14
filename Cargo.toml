@@ -30,8 +30,12 @@ libc = "0.2"
 
 # Configuration
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 dirs = "5"
+
+# HTTP client (sync, for LLM API calls)
+ureq = { version = "3", features = ["json"] }
 
 # Logging
 log = "0.4"
@@ -39,6 +43,9 @@ env_logger = "0.11"
 
 # Image encoding (for screenshot feature)
 image = { version = "0.24", default-features = false, features = ["png"] }
+
+# Clipboard support
+arboard = "3"
 
 # macOS native views (WebView, Notes plugins)
 raw-window-handle = "0.6"
